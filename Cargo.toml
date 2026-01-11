@@ -19,6 +19,13 @@ tokio-stream = "0.1"
 mpris = "2.0"
 zbus = "4.0"
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.52", features = [
+    "Media_Control",
+    "Storage_Streams",
+    "Foundation",
+] }
+
 [[example]]
 name = "stream"
 path = "examples/stream.rs"
