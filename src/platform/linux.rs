@@ -262,7 +262,6 @@ impl LinuxMediaWatcher {
 
     fn create_event_stream_impl(&self) -> impl Stream<Item = MediaEvent> {
         let finder = self.finder.clone();
-        let players_cache = self.players.clone();
 
         let (tx, rx) = mpsc::unbounded_channel();
 
@@ -290,11 +289,6 @@ impl LinuxMediaWatcher {
                     if tx.send(event).is_err() {
                         return; // Receiver dropped
                     }
-                }
-
-                // Update cache
-                if let Ok(mut cache) = players_cache.try_write() {
-                    *cache = monitor.known_players().clone();
                 }
             }
         });
