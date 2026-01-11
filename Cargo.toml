@@ -2,5 +2,25 @@
 name = "nowhear"
 version = "0.1.0"
 edition = "2024"
+authors = ["Akiomi Kamakura <akiomik@gmail.com>"]
+description = "Cross-platform media playback information watcher"
+repository = "https://github.com/akiomik/nowhear"
+keywords = ["media", "music", "playback", "mpris", "nowplaying"]
+categories = ["multimedia", "os"]
 
 [dependencies]
+futures = "0.3"
+async-trait = "0.1"
+thiserror = "1.0"
+tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread", "sync"] }
+tokio-stream = "0.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.25"
+objc = "0.2"
+objc-foundation = "0.1"
+core-foundation = "0.9"
+
+[[example]]
+name = "stream"
+path = "examples/stream.rs"
