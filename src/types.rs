@@ -34,6 +34,15 @@ pub enum PlaybackState {
     Stopped,
 }
 
+/// Player state including track, playback state, position, and volume
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerState {
+    pub track: Track,
+    pub playback_state: PlaybackState,
+    pub position: Option<Duration>,
+    pub volume: Option<f64>,
+}
+
 /// Player information
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlayerInfo {

@@ -1,11 +1,10 @@
 use crate::error::Result;
 use crate::types::{MediaEvent, PlayerInfo};
 use async_trait::async_trait;
-use futures::Stream;
-use std::pin::Pin;
+use futures::stream::BoxStream;
 
 /// Type alias for event stream
-pub type EventStream = Pin<Box<dyn Stream<Item = MediaEvent> + Send>>;
+pub type EventStream = BoxStream<'static, MediaEvent>;
 
 /// Main trait for media watching functionality
 #[async_trait]
