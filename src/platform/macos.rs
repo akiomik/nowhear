@@ -262,9 +262,12 @@ impl MacOSMediaWatcher {
             loop {
                 interval.tick().await;
 
-                // Poll Music.app state
-                let music_state = Self::poll_music_app().await.ok().flatten();
-                let music_events = monitor.process_player("Music", music_state);
+                // Poll both players in parallel
+                let (music_state, spotify_state) =
+                    tokio::join!(Self::poll_music_app(), Self::poll_spotify());
+
+                // Process Music.app state
+                let music_events = monitor.process_player("Music", music_state.ok().flatten());
 
                 // Send Music.app events
                 for event in music_events {
@@ -273,9 +276,9 @@ impl MacOSMediaWatcher {
                     }
                 }
 
-                // Poll Spotify state
-                let spotify_state = Self::poll_spotify().await.ok().flatten();
-                let spotify_events = monitor.process_player("Spotify", spotify_state);
+                // Process Spotify state
+                let spotify_events =
+                    monitor.process_player("Spotify", spotify_state.ok().flatten());
 
                 // Send Spotify events
                 for event in spotify_events {

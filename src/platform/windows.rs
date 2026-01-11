@@ -316,14 +316,23 @@ impl WindowsMediaWatcher {
 
                 let mut current_states = HashMap::new();
 
-                // Query state for each session
-                for session in sessions {
-                    let session_id = match Self::get_session_id(&session) {
-                        Ok(id) => id,
-                        Err(_) => continue,
-                    };
+                // Collect all session futures for parallel execution
+                let mut futures = Vec::new();
+                let mut session_ids = Vec::new();
 
-                    if let Ok(state) = Self::get_session_state(&session).await {
+                for session in sessions {
+                    if let Ok(session_id) = Self::get_session_id(&session) {
+                        session_ids.push(session_id);
+                        futures.push(Self::get_session_state(&session));
+                    }
+                }
+
+                // Execute all queries in parallel
+                let results = futures::future::join_all(futures).await;
+
+                // Collect successful results
+                for (session_id, result) in session_ids.into_iter().zip(results) {
+                    if let Ok(state) = result {
                         current_states.insert(session_id, state);
                     }
                 }
