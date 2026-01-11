@@ -21,6 +21,142 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 /// to query the current playback state. It supports Music.app and Spotify.
 pub struct MacOSMediaWatcher;
 
+/// Monitors player state changes and generates events for macOS players.
+///
+/// This structure tracks the state of multiple players (Music.app and Spotify)
+/// and detects changes to generate appropriate events.
+struct PlayerMonitor {
+    /// Current state of each player, keyed by player name
+    players: std::collections::HashMap<String, PlayerState>,
+    /// Whether each player is currently running
+    running: std::collections::HashMap<String, bool>,
+}
+
+impl PlayerMonitor {
+    fn new() -> Self {
+        Self {
+            players: std::collections::HashMap::new(),
+            running: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Process a player's current state and generate events for any changes.
+    ///
+    /// # Arguments
+    ///
+    /// * `player_name` - The name of the player (e.g., "Music" or "Spotify")
+    /// * `current_state` - The current state of the player, or None if not running
+    ///
+    /// # Returns
+    ///
+    /// A vector of MediaEvent items representing detected changes
+    fn process_player(
+        &mut self,
+        player_name: &str,
+        current_state: Option<PlayerState>,
+    ) -> Vec<MediaEvent> {
+        let mut events = Vec::new();
+        let is_running = self.running.get(player_name).copied().unwrap_or(false);
+
+        match current_state {
+            Some(state) => {
+                // Player is running
+                if !is_running {
+                    // Player just started
+                    events.push(MediaEvent::PlayerAdded {
+                        player_name: player_name.to_string(),
+                    });
+                    self.running.insert(player_name.to_string(), true);
+                }
+
+                // Check for state changes
+                if let Some(last_state) = self.players.get(player_name) {
+                    self.detect_changes(player_name, last_state, &state, &mut events);
+                } else {
+                    // First time seeing this player with state
+                    events.push(MediaEvent::TrackChanged {
+                        player_name: player_name.to_string(),
+                        track: state.track.clone(),
+                    });
+                    events.push(MediaEvent::StateChanged {
+                        player_name: player_name.to_string(),
+                        state: state.playback_state,
+                    });
+                }
+
+                // Update stored state
+                self.players.insert(player_name.to_string(), state);
+            }
+            None => {
+                // Player is not running or not playing
+                if is_running {
+                    // Player was running but stopped
+                    events.push(MediaEvent::PlayerRemoved {
+                        player_name: player_name.to_string(),
+                    });
+                    self.running.insert(player_name.to_string(), false);
+                    self.players.remove(player_name);
+                }
+            }
+        }
+
+        events
+    }
+
+    /// Detect changes between last and current state and generate events.
+    fn detect_changes(
+        &self,
+        player_name: &str,
+        last: &PlayerState,
+        current: &PlayerState,
+        events: &mut Vec<MediaEvent>,
+    ) {
+        // Check for track change
+        if last.track != current.track {
+            events.push(MediaEvent::TrackChanged {
+                player_name: player_name.to_string(),
+                track: current.track.clone(),
+            });
+        }
+
+        // Check for playback state change
+        if last.playback_state != current.playback_state {
+            events.push(MediaEvent::StateChanged {
+                player_name: player_name.to_string(),
+                state: current.playback_state,
+            });
+        }
+
+        // Check for position change (seek detection)
+        if let Some(current_pos) = current.position {
+            let should_emit = if let Some(last_pos) = last.position {
+                // Detect seek: position difference > 2 seconds
+                let diff = current_pos.abs_diff(last_pos);
+                diff > Duration::from_secs(2)
+            } else {
+                true // First position
+            };
+
+            if should_emit {
+                events.push(MediaEvent::PositionChanged {
+                    player_name: player_name.to_string(),
+                    position: current_pos,
+                });
+            }
+        }
+
+        // Check for volume change
+        if current.volume != last.volume
+            && let Some(vol) = current.volume
+        {
+            events.push(MediaEvent::VolumeChanged {
+                player_name: player_name.to_string(),
+                volume: vol,
+            });
+        }
+    }
+}
+
 impl MacOSMediaWatcher {
     /// Creates a new macOS media watcher.
     ///
@@ -120,193 +256,32 @@ impl MacOSMediaWatcher {
         let (tx, rx) = mpsc::unbounded_channel();
 
         tokio::spawn(async move {
-            let mut last_music_track: Option<Track> = None;
-            let mut last_music_state: Option<PlaybackState> = None;
-            let mut last_music_position: Option<Duration> = None;
-            let mut last_music_volume: Option<f64> = None;
-            let mut last_spotify_track: Option<Track> = None;
-            let mut last_spotify_state: Option<PlaybackState> = None;
-            let mut last_spotify_position: Option<Duration> = None;
-            let mut last_spotify_volume: Option<f64> = None;
-            let mut music_app_running = false;
-            let mut spotify_running = false;
+            let mut monitor = PlayerMonitor::new();
             let mut interval = time::interval(Duration::from_millis(1000));
 
             loop {
                 interval.tick().await;
 
-                // Check Music.app state
-                if let Ok(Some(player_state)) = Self::poll_music_app().await {
-                    // Check if Music.app just started
-                    if !music_app_running {
-                        let event = MediaEvent::PlayerAdded {
-                            player_name: "Music".to_string(),
-                        };
-                        if tx.send(event).is_err() {
-                            break; // Receiver dropped
-                        }
-                        music_app_running = true;
-                    }
+                // Poll Music.app state
+                let music_state = Self::poll_music_app().await.ok().flatten();
+                let music_events = monitor.process_player("Music", music_state);
 
-                    // Check for track change
-                    if last_music_track.as_ref() != Some(&player_state.track) {
-                        let event = MediaEvent::TrackChanged {
-                            player_name: "Music".to_string(),
-                            track: player_state.track.clone(),
-                        };
-                        if tx.send(event).is_err() {
-                            break; // Receiver dropped
-                        }
-                        last_music_track = Some(player_state.track.clone());
-                    }
-
-                    // Check for playback state change
-                    if last_music_state != Some(player_state.playback_state) {
-                        let event = MediaEvent::StateChanged {
-                            player_name: "Music".to_string(),
-                            state: player_state.playback_state,
-                        };
-                        if tx.send(event).is_err() {
-                            break; // Receiver dropped
-                        }
-                        last_music_state = Some(player_state.playback_state);
-                    }
-
-                    // Check for position change (seek detection - significant jump)
-                    if let Some(pos) = player_state.position {
-                        let should_emit = if let Some(last_pos) = last_music_position {
-                            // Detect seek: position difference > 2 seconds
-                            let diff = pos.abs_diff(last_pos);
-                            diff > Duration::from_secs(2)
-                        } else {
-                            true // First position
-                        };
-
-                        if should_emit {
-                            let event = MediaEvent::PositionChanged {
-                                player_name: "Music".to_string(),
-                                position: pos,
-                            };
-                            if tx.send(event).is_err() {
-                                break; // Receiver dropped
-                            }
-                        }
-                        last_music_position = Some(pos);
-                    }
-
-                    // Check for volume change
-                    if player_state.volume != last_music_volume {
-                        if let Some(vol) = player_state.volume {
-                            let event = MediaEvent::VolumeChanged {
-                                player_name: "Music".to_string(),
-                                volume: vol,
-                            };
-                            if tx.send(event).is_err() {
-                                break; // Receiver dropped
-                            }
-                        }
-                        last_music_volume = player_state.volume;
-                    }
-                } else if music_app_running {
-                    // Music.app has stopped
-                    let event = MediaEvent::PlayerRemoved {
-                        player_name: "Music".to_string(),
-                    };
+                // Send Music.app events
+                for event in music_events {
                     if tx.send(event).is_err() {
-                        break; // Receiver dropped
+                        return; // Receiver dropped
                     }
-                    music_app_running = false;
-                    last_music_track = None;
-                    last_music_state = None;
-                    last_music_position = None;
-                    last_music_volume = None;
                 }
 
-                // Check Spotify state
-                if let Ok(Some(player_state)) = Self::poll_spotify().await {
-                    // Check if Spotify just started
-                    if !spotify_running {
-                        let event = MediaEvent::PlayerAdded {
-                            player_name: "Spotify".to_string(),
-                        };
-                        if tx.send(event).is_err() {
-                            break; // Receiver dropped
-                        }
-                        spotify_running = true;
-                    }
+                // Poll Spotify state
+                let spotify_state = Self::poll_spotify().await.ok().flatten();
+                let spotify_events = monitor.process_player("Spotify", spotify_state);
 
-                    // Check for track change
-                    if last_spotify_track.as_ref() != Some(&player_state.track) {
-                        let event = MediaEvent::TrackChanged {
-                            player_name: "Spotify".to_string(),
-                            track: player_state.track.clone(),
-                        };
-                        if tx.send(event).is_err() {
-                            break; // Receiver dropped
-                        }
-                        last_spotify_track = Some(player_state.track.clone());
-                    }
-
-                    // Check for playback state change
-                    if last_spotify_state != Some(player_state.playback_state) {
-                        let event = MediaEvent::StateChanged {
-                            player_name: "Spotify".to_string(),
-                            state: player_state.playback_state,
-                        };
-                        if tx.send(event).is_err() {
-                            break; // Receiver dropped
-                        }
-                        last_spotify_state = Some(player_state.playback_state);
-                    }
-
-                    // Check for position change (seek detection - significant jump)
-                    if let Some(pos) = player_state.position {
-                        let should_emit = if let Some(last_pos) = last_spotify_position {
-                            // Detect seek: position difference > 2 seconds
-                            let diff = pos.abs_diff(last_pos);
-                            diff > Duration::from_secs(2)
-                        } else {
-                            true // First position
-                        };
-
-                        if should_emit {
-                            let event = MediaEvent::PositionChanged {
-                                player_name: "Spotify".to_string(),
-                                position: pos,
-                            };
-                            if tx.send(event).is_err() {
-                                break; // Receiver dropped
-                            }
-                        }
-                        last_spotify_position = Some(pos);
-                    }
-
-                    // Check for volume change
-                    if player_state.volume != last_spotify_volume {
-                        if let Some(vol) = player_state.volume {
-                            let event = MediaEvent::VolumeChanged {
-                                player_name: "Spotify".to_string(),
-                                volume: vol,
-                            };
-                            if tx.send(event).is_err() {
-                                break; // Receiver dropped
-                            }
-                        }
-                        last_spotify_volume = player_state.volume;
-                    }
-                } else if spotify_running {
-                    // Spotify has stopped
-                    let event = MediaEvent::PlayerRemoved {
-                        player_name: "Spotify".to_string(),
-                    };
+                // Send Spotify events
+                for event in spotify_events {
                     if tx.send(event).is_err() {
-                        break; // Receiver dropped
+                        return; // Receiver dropped
                     }
-                    spotify_running = false;
-                    last_spotify_track = None;
-                    last_spotify_state = None;
-                    last_spotify_position = None;
-                    last_spotify_volume = None;
                 }
             }
         });
@@ -722,5 +697,339 @@ mod tests {
         assert!(result.is_some());
         let player_state = result.unwrap();
         assert_eq!(player_state.playback_state, PlaybackState::Playing);
+    }
+
+    // PlayerMonitor tests
+
+    fn create_test_player_state(
+        title: &str,
+        playback_state: PlaybackState,
+        position: Option<Duration>,
+        volume: Option<f64>,
+    ) -> PlayerState {
+        PlayerState {
+            track: Track {
+                title: title.to_string(),
+                artist: vec!["Test Artist".to_string()],
+                album: Some("Test Album".to_string()),
+                album_artist: None,
+                track_number: None,
+                duration: Some(Duration::from_secs(180)),
+                art_url: None,
+            },
+            playback_state,
+            position,
+            volume,
+        }
+    }
+
+    #[test]
+    fn test_player_monitor_new() {
+        let monitor = PlayerMonitor::new();
+        assert_eq!(monitor.players.len(), 0);
+        assert_eq!(monitor.running.len(), 0);
+    }
+
+    #[test]
+    fn test_player_monitor_first_player_added() {
+        let mut monitor = PlayerMonitor::new();
+        let state = create_test_player_state(
+            "Song 1",
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+            Some(0.8),
+        );
+
+        let events = monitor.process_player("Music", Some(state));
+
+        // Should get: PlayerAdded, TrackChanged, StateChanged
+        assert_eq!(events.len(), 3);
+        assert!(matches!(events[0], MediaEvent::PlayerAdded { .. }));
+        assert!(matches!(events[1], MediaEvent::TrackChanged { .. }));
+        assert!(matches!(events[2], MediaEvent::StateChanged { .. }));
+    }
+
+    #[test]
+    fn test_player_monitor_track_changed() {
+        let mut monitor = PlayerMonitor::new();
+
+        // Initial state
+        let initial_state = create_test_player_state(
+            "Song 1",
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+            Some(0.8),
+        );
+        monitor.process_player("Music", Some(initial_state));
+
+        // New state with different track (keep position similar to avoid position change event)
+        let new_state = create_test_player_state(
+            "Song 2",
+            PlaybackState::Playing,
+            Some(Duration::from_secs(11)), // Only 1 second difference
+            Some(0.8),
+        );
+        let events = monitor.process_player("Music", Some(new_state));
+
+        // Should only detect track change
+        assert_eq!(events.len(), 1);
+        if let MediaEvent::TrackChanged { player_name, track } = &events[0] {
+            assert_eq!(player_name, "Music");
+            assert_eq!(track.title, "Song 2");
+        } else {
+            panic!("Expected TrackChanged event");
+        }
+    }
+
+    #[test]
+    fn test_player_monitor_playback_state_changed() {
+        let mut monitor = PlayerMonitor::new();
+
+        // Initial state
+        let initial_state = create_test_player_state(
+            "Song 1",
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+            Some(0.8),
+        );
+        monitor.process_player("Music", Some(initial_state));
+
+        // New state with different playback state
+        let new_state = create_test_player_state(
+            "Song 1",
+            PlaybackState::Paused,
+            Some(Duration::from_secs(10)),
+            Some(0.8),
+        );
+        let events = monitor.process_player("Music", Some(new_state));
+
+        // Should detect state change
+        assert_eq!(events.len(), 1);
+        if let MediaEvent::StateChanged { player_name, state } = &events[0] {
+            assert_eq!(player_name, "Music");
+            assert_eq!(*state, PlaybackState::Paused);
+        } else {
+            panic!("Expected StateChanged event");
+        }
+    }
+
+    #[test]
+    fn test_player_monitor_position_seek() {
+        let mut monitor = PlayerMonitor::new();
+
+        // Initial state
+        let initial_state = create_test_player_state(
+            "Song 1",
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+            Some(0.8),
+        );
+        monitor.process_player("Music", Some(initial_state));
+
+        // New state with significant position jump
+        let new_state = create_test_player_state(
+            "Song 1",
+            PlaybackState::Playing,
+            Some(Duration::from_secs(60)), // Jumped 50 seconds
+            Some(0.8),
+        );
+        let events = monitor.process_player("Music", Some(new_state));
+
+        // Should detect position change
+        assert_eq!(events.len(), 1);
+        if let MediaEvent::PositionChanged {
+            player_name,
+            position,
+        } = &events[0]
+        {
+            assert_eq!(player_name, "Music");
+            assert_eq!(*position, Duration::from_secs(60));
+        } else {
+            panic!("Expected PositionChanged event");
+        }
+    }
+
+    #[test]
+    fn test_player_monitor_position_normal_playback() {
+        let mut monitor = PlayerMonitor::new();
+
+        // Initial state
+        let initial_state = create_test_player_state(
+            "Song 1",
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+            Some(0.8),
+        );
+        monitor.process_player("Music", Some(initial_state));
+
+        // New state with normal 1 second progression
+        let new_state = create_test_player_state(
+            "Song 1",
+            PlaybackState::Playing,
+            Some(Duration::from_secs(11)),
+            Some(0.8),
+        );
+        let events = monitor.process_player("Music", Some(new_state));
+
+        // Should not detect position change for normal playback
+        assert_eq!(events.len(), 0);
+    }
+
+    #[test]
+    fn test_player_monitor_volume_changed() {
+        let mut monitor = PlayerMonitor::new();
+
+        // Initial state
+        let initial_state = create_test_player_state(
+            "Song 1",
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+            Some(0.8),
+        );
+        monitor.process_player("Music", Some(initial_state));
+
+        // New state with different volume
+        let new_state = create_test_player_state(
+            "Song 1",
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+            Some(0.5),
+        );
+        let events = monitor.process_player("Music", Some(new_state));
+
+        // Should detect volume change
+        assert_eq!(events.len(), 1);
+        if let MediaEvent::VolumeChanged {
+            player_name,
+            volume,
+        } = &events[0]
+        {
+            assert_eq!(player_name, "Music");
+            assert_eq!(*volume, 0.5);
+        } else {
+            panic!("Expected VolumeChanged event");
+        }
+    }
+
+    #[test]
+    fn test_player_monitor_player_removed() {
+        let mut monitor = PlayerMonitor::new();
+
+        // Initial state - player running
+        let initial_state = create_test_player_state(
+            "Song 1",
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+            Some(0.8),
+        );
+        monitor.process_player("Music", Some(initial_state));
+
+        // Player stopped
+        let events = monitor.process_player("Music", None);
+
+        // Should detect player removal
+        assert_eq!(events.len(), 1);
+        if let MediaEvent::PlayerRemoved { player_name } = &events[0] {
+            assert_eq!(player_name, "Music");
+        } else {
+            panic!("Expected PlayerRemoved event");
+        }
+
+        // State should be cleared
+        assert!(!monitor.players.contains_key("Music"));
+    }
+
+    #[test]
+    fn test_player_monitor_multiple_players() {
+        let mut monitor = PlayerMonitor::new();
+
+        // Add Music.app
+        let music_state = create_test_player_state(
+            "Song 1",
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+            Some(0.8),
+        );
+        let events = monitor.process_player("Music", Some(music_state));
+        assert_eq!(events.len(), 3); // Added + Track + State
+
+        // Add Spotify
+        let spotify_state = create_test_player_state(
+            "Song 2",
+            PlaybackState::Playing,
+            Some(Duration::from_secs(5)),
+            Some(0.7),
+        );
+        let events = monitor.process_player("Spotify", Some(spotify_state));
+        assert_eq!(events.len(), 3); // Added + Track + State
+
+        // Both should be tracked
+        assert_eq!(monitor.players.len(), 2);
+        assert!(monitor.players.contains_key("Music"));
+        assert!(monitor.players.contains_key("Spotify"));
+    }
+
+    #[test]
+    fn test_player_monitor_multiple_changes() {
+        let mut monitor = PlayerMonitor::new();
+
+        // Initial state
+        let initial_state = create_test_player_state(
+            "Song 1",
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+            Some(0.8),
+        );
+        monitor.process_player("Music", Some(initial_state));
+
+        // New state with multiple changes
+        let new_state = create_test_player_state(
+            "Song 2",
+            PlaybackState::Paused,
+            Some(Duration::from_secs(60)),
+            Some(0.5),
+        );
+        let events = monitor.process_player("Music", Some(new_state));
+
+        // Should detect all changes: track, state, position, volume
+        assert_eq!(events.len(), 4);
+
+        let has_track_change = events
+            .iter()
+            .any(|e| matches!(e, MediaEvent::TrackChanged { .. }));
+        let has_state_change = events
+            .iter()
+            .any(|e| matches!(e, MediaEvent::StateChanged { .. }));
+        let has_position_change = events
+            .iter()
+            .any(|e| matches!(e, MediaEvent::PositionChanged { .. }));
+        let has_volume_change = events
+            .iter()
+            .any(|e| matches!(e, MediaEvent::VolumeChanged { .. }));
+
+        assert!(has_track_change);
+        assert!(has_state_change);
+        assert!(has_position_change);
+        assert!(has_volume_change);
+    }
+
+    #[test]
+    fn test_player_monitor_no_changes() {
+        let mut monitor = PlayerMonitor::new();
+
+        // Initial state
+        let state = create_test_player_state(
+            "Song 1",
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+            Some(0.8),
+        );
+        monitor.process_player("Music", Some(state.clone()));
+
+        // Same state again
+        let events = monitor.process_player("Music", Some(state));
+
+        // Should not generate any events
+        assert_eq!(events.len(), 0);
     }
 }
