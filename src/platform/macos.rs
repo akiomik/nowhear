@@ -967,6 +967,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn test_player_monitor_volume_changed() {
         let mut monitor = PlayerMonitor::new();
 
