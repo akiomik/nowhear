@@ -17,7 +17,7 @@ use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionManager as SessionManager,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as WinPlaybackStatus,
 };
-use windows::core::ComInterface;
+use windows::core::Interface;
 
 /// Internal player state representation for Windows implementation.
 ///
@@ -146,7 +146,7 @@ impl WindowsMediaControlProvider {
                     .and_then(|stringable| stringable.ToString().ok())
                     .map(|s| s.to_string())
             })
-            .filter(|s| !s.is_empty());
+            .filter(|s: &String| !s.is_empty());
 
         let position_ticks = timeline.Position().ok();
         let position =
