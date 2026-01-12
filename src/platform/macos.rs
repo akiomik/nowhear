@@ -174,7 +174,7 @@ impl PlayerMonitor {
 
                 // Check for state changes
                 if let Some(last_state) = self.players.get(player_name) {
-                    self.detect_changes(player_name, last_state, &state, &mut events);
+                    Self::detect_changes(player_name, last_state, &state, &mut events);
                 } else {
                     // First time seeing this player with state
                     events.push(MediaEvent::TrackChanged {
@@ -207,7 +207,6 @@ impl PlayerMonitor {
     }
 
     fn detect_changes(
-        &self,
         player_name: &str,
         last: &PlayerState,
         current: &PlayerState,
