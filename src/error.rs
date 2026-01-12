@@ -1,3 +1,8 @@
+//! Error types for media watcher operations.
+//!
+//! This module defines the error types that can occur when interacting with
+//! media players across different platforms.
+
 use thiserror::Error;
 
 /// Errors that can occur when using the media watcher.
@@ -25,4 +30,17 @@ pub enum MediaWatcherError {
 }
 
 /// Result type alias for media watcher operations.
+///
+/// This is a convenience type alias that uses [`MediaWatcherError`] as the error type.
+/// Most functions in this crate return this type.
+///
+/// # Examples
+///
+/// ```
+/// use nowhear::Result;
+///
+/// fn example_function() -> Result<String> {
+///     Ok("success".to_string())
+/// }
+/// ```
 pub type Result<T> = std::result::Result<T, MediaWatcherError>;

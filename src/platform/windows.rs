@@ -285,8 +285,30 @@ impl MediaSessionProvider for WindowsMediaControlProvider {
 
 /// Windows media watcher implementation using Windows Media Control API.
 ///
-/// Note: This type is visible for technical reasons but should not be used directly.
-/// Use `MediaWatcherBuilder` to create media watchers.
+/// This implementation uses the Windows Runtime API
+/// [`GlobalSystemMediaTransportControlsSessionManager`](https://learn.microsoft.com/en-us/uwp/api/windows.media.control.globalsystemmediatransportcontrolssessionmanager)
+/// to interact with media players on Windows 10 and later.
+///
+/// It supports any application that integrates with Windows Media Control, including:
+///
+/// - Spotify
+/// - VLC
+/// - Windows Media Player
+/// - Microsoft Edge (for web-based media)
+/// - Chrome (for web-based media)
+/// - And many more
+///
+/// # Implementation Details
+///
+/// The implementation polls for changes every 1 second to detect state changes.
+/// Windows does not provide reliable event notifications for all media state changes,
+/// so polling is used to ensure consistent behavior.
+///
+/// # Note
+///
+/// This type is visible for technical reasons but should not be used directly.
+/// Use [`nowhear::MediaWatcherBuilder`] to create media watchers, which will
+/// automatically select this implementation on Windows systems.
 pub struct WindowsMediaWatcher<P: MediaSessionProvider = WindowsMediaControlProvider> {
     provider: Arc<P>,
 }

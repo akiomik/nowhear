@@ -1,9 +1,32 @@
+//! Core types for media playback information.
+//!
+//! This module defines the main data structures used to represent media tracks,
+//! playback states, player information, and events emitted by media players.
+
 use std::time::Duration;
 
 /// Represents a media track with metadata.
 ///
-/// This structure contains all available metadata about a track,
-/// such as title, artist, album information, and artwork URL.
+/// This structure contains all available metadata about a track, including basic
+/// information like title and artist, as well as optional metadata such as album
+/// information, track number, duration, and artwork URL.
+///
+/// # Examples
+///
+/// ```
+/// use nowhear::Track;
+/// use std::time::Duration;
+///
+/// let track = Track {
+///     title: "Bohemian Rhapsody".to_string(),
+///     artist: vec!["Queen".to_string()],
+///     album: Some("A Night at the Opera".to_string()),
+///     album_artist: None,
+///     track_number: Some(11),
+///     duration: Some(Duration::from_secs(354)),
+///     art_url: None,
+/// };
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Track {
     /// Track title
@@ -41,20 +64,43 @@ impl Track {
 }
 
 /// Playback state of a media player.
+///
+/// Represents the current playback state of a media player. This is used in
+/// both [`PlayerInfo`] and [`MediaEvent::StateChanged`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackState {
-    /// Media is currently playing
+    /// Media is currently playing.
     Playing,
-    /// Media is paused
+    /// Media is paused.
+    ///
+    /// The player has a track loaded but playback is temporarily stopped.
     Paused,
-    /// Media is stopped or no media is loaded
+    /// Media is stopped or no media is loaded.
+    ///
+    /// The player is idle or has no track loaded.
     Stopped,
 }
 
 /// Complete information about a media player's current state.
 ///
-/// This structure contains the player name, current track information,
-/// playback state, and other playback details.
+/// This structure contains comprehensive information about a media player's current state,
+/// including the currently playing track, playback state, position, and volume.
+///
+/// # Examples
+///
+/// ```no_run
+/// use nowhear::{MediaWatcher, MediaWatcherBuilder, Result};
+///
+/// # async fn example() -> Result<()> {
+/// let watcher = MediaWatcherBuilder::new().build().await?;
+/// let player_info = watcher.get_player("spotify").await?;
+///
+/// if let Some(track) = player_info.current_track {
+///     println!("Playing: {} by {}", track.title, track.artist.join(", "));
+/// }
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlayerInfo {
     /// Name or identifier of the player
@@ -72,9 +118,25 @@ pub struct PlayerInfo {
 impl PlayerInfo {
     /// Creates player info for a player with no active playback.
     ///
+    /// This is useful when a player is detected but not currently playing any media.
+    /// The returned `PlayerInfo` will have no track, stopped playback state, and
+    /// no position or volume information.
+    ///
     /// # Arguments
     ///
     /// * `player_name` - The name of the player
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nowhear::{PlayerInfo, PlaybackState};
+    ///
+    /// let info = PlayerInfo::empty("spotify");
+    /// assert_eq!(info.player_name, "spotify");
+    /// assert_eq!(info.current_track, None);
+    /// assert_eq!(info.playback_state, PlaybackState::Stopped);
+    /// ```
+    #[must_use]
     pub fn empty(player_name: impl Into<String>) -> Self {
         Self {
             player_name: player_name.into(),
@@ -86,25 +148,74 @@ impl PlayerInfo {
     }
 }
 
-/// Events emitted by the media watcher
+/// Events emitted by the media watcher.
+///
+/// These events are generated when media playback state changes across any
+/// monitored player. Subscribe to these events using [`crate::MediaWatcher::event_stream`].
+///
+/// # Examples
+///
+/// ```no_run
+/// use nowhear::{MediaWatcher, MediaWatcherBuilder, MediaEvent, Result};
+/// use futures::StreamExt;
+///
+/// # async fn example() -> Result<()> {
+/// let watcher = MediaWatcherBuilder::new().build().await?;
+/// let mut stream = watcher.event_stream().await?;
+///
+/// while let Some(event) = stream.next().await {
+///     match event {
+///         MediaEvent::TrackChanged { player_name, track } => {
+///             println!("{}: Now playing {}", player_name, track.title);
+///         }
+///         MediaEvent::StateChanged { player_name, state } => {
+///             println!("{}: State changed to {:?}", player_name, state);
+///         }
+///         _ => {}
+///     }
+/// }
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub enum MediaEvent {
-    /// A new track started playing
+    /// A new track started playing.
+    ///
+    /// This event is emitted when the current track changes to a different track.
     TrackChanged { player_name: String, track: Track },
-    /// Playback state changed
+
+    /// Playback state changed.
+    ///
+    /// This event is emitted when the player transitions between playing, paused, or stopped states.
     StateChanged {
         player_name: String,
         state: PlaybackState,
     },
-    /// Playback position changed (seek)
+
+    /// Playback position changed (seek).
+    ///
+    /// This event is emitted when the user seeks to a different position in the track.
+    /// Note: This is not emitted for normal playback progression, only for significant
+    /// position changes (typically > 2 seconds).
     PositionChanged {
         player_name: String,
         position: Duration,
     },
-    /// Volume changed
+
+    /// Volume changed.
+    ///
+    /// This event is emitted when the player's volume level changes.
+    /// The volume value is typically between 0.0 (muted) and 1.0 (maximum).
     VolumeChanged { player_name: String, volume: f64 },
-    /// A new player appeared
+
+    /// A new player appeared.
+    ///
+    /// This event is emitted when a new media player starts and becomes available
+    /// for monitoring.
     PlayerAdded { player_name: String },
-    /// A player disappeared
+
+    /// A player disappeared.
+    ///
+    /// This event is emitted when a media player stops or becomes unavailable.
     PlayerRemoved { player_name: String },
 }
