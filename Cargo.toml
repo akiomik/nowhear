@@ -5,6 +5,7 @@ edition = "2024"
 authors = ["Akiomi Kamakura <akiomik@gmail.com>"]
 description = "Cross-platform media playback information watcher"
 repository = "https://github.com/akiomik/nowhear"
+license = "Apache-2.0"
 keywords = ["media", "music", "playback", "mpris", "nowplaying"]
 categories = ["multimedia", "os"]
 
