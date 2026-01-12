@@ -26,6 +26,7 @@ impl Track {
     /// Creates a track with default "Unknown" values.
     ///
     /// This is useful when track information is not available.
+    #[must_use]
     pub fn unknown() -> Self {
         Self {
             title: "Unknown".to_string(),
