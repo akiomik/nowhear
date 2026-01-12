@@ -458,11 +458,7 @@ mod tests {
                 .states
                 .iter()
                 .filter_map(|(name, state)| {
-                    if state.is_some() {
-                        Some(name.clone())
-                    } else {
-                        None
-                    }
+                    state.as_ref().map(|_| name.clone())
                 })
                 .collect();
             Ok(players)
