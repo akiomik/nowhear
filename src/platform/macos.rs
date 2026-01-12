@@ -1,7 +1,4 @@
-//! macOS-specific implementation of the media watcher.
-//!
-//! This module provides media monitoring functionality for macOS using AppleScript
-//! to interact with media players like Music.app and Spotify.
+//! macOS-specific implementation using AppleScript.
 
 #[cfg(target_os = "macos")]
 use crate::error::{MediaWatcherError, Result};
@@ -15,40 +12,18 @@ use tokio::sync::mpsc;
 use tokio::time;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-/// Trait for querying player state from the underlying system.
-///
-/// This trait abstracts the mechanism for retrieving player state,
-/// allowing for dependency injection and easier testing.
+// Internal trait for abstracting player state retrieval
 pub trait PlayerStateProvider: Send + Sync {
-    /// Get the current state of a specific player.
-    ///
-    /// # Arguments
-    ///
-    /// * `player_name` - The name of the player (e.g., "Music" or "Spotify")
-    ///
-    /// # Returns
-    ///
-    /// Returns `Ok(Some(PlayerState))` if the player is running and has state,
-    /// `Ok(None)` if the player is not running or has no state.
     fn get_player_state(
         &self,
         player_name: &str,
     ) -> impl std::future::Future<Output = Result<Option<PlayerState>>> + Send;
-
-    /// List all available player names.
-    ///
-    /// # Returns
-    ///
-    /// Returns a vector of player names that are currently available.
     fn list_available_players(
         &self,
     ) -> impl std::future::Future<Output = Result<Vec<String>>> + Send;
 }
 
-/// AppleScript-based player state provider for macOS.
-///
-/// This provider uses AppleScript to query the state of media players
-/// like Music.app and Spotify.
+// AppleScript-based provider for macOS
 pub struct AppleScriptProvider;
 
 impl PlayerStateProvider for AppleScriptProvider {
@@ -76,7 +51,6 @@ impl PlayerStateProvider for AppleScriptProvider {
 }
 
 impl AppleScriptProvider {
-    /// Retrieves the current playback state from Music.app using AppleScript.
     async fn get_music_app_state() -> Result<Option<PlayerState>> {
         let script = r#"
             if application "Music" is running then
@@ -103,7 +77,6 @@ impl AppleScriptProvider {
         }
     }
 
-    /// Retrieves the current playback state from Spotify using AppleScript.
     async fn get_spotify_state() -> Result<Option<PlayerState>> {
         let script = r#"
             if application "Spotify" is running then
@@ -131,22 +104,20 @@ impl AppleScriptProvider {
     }
 }
 
-/// Media watcher implementation for macOS.
+/// macOS media watcher implementation using AppleScript.
 ///
-/// This watcher monitors media players on macOS by using a pluggable
-/// PlayerStateProvider to query the current playback state.
+/// # Implementation Note
+///
+/// This implementation uses AppleScript for querying player state rather than
+/// `NSDistributedNotificationCenter`, which would require running on the main thread.
+/// The AppleScript approach with periodic polling offers a simpler alternative that
+/// works well in async contexts.
 pub struct MacOSMediaWatcher<P: PlayerStateProvider = AppleScriptProvider> {
     provider: Arc<P>,
 }
 
-/// Monitors player state changes and generates events for macOS players.
-///
-/// This structure tracks the state of multiple players (Music.app and Spotify)
-/// and detects changes to generate appropriate events.
 struct PlayerMonitor {
-    /// Current state of each player, keyed by player name
     players: std::collections::HashMap<String, PlayerState>,
-    /// Whether each player is currently running
     running: std::collections::HashMap<String, bool>,
 }
 
@@ -158,16 +129,6 @@ impl PlayerMonitor {
         }
     }
 
-    /// Process a player's current state and generate events for any changes.
-    ///
-    /// # Arguments
-    ///
-    /// * `player_name` - The name of the player (e.g., "Music" or "Spotify")
-    /// * `current_state` - The current state of the player, or None if not running
-    ///
-    /// # Returns
-    ///
-    /// A vector of MediaEvent items representing detected changes
     fn process_player(
         &mut self,
         player_name: &str,
@@ -221,7 +182,6 @@ impl PlayerMonitor {
         events
     }
 
-    /// Detect changes between last and current state and generate events.
     fn detect_changes(
         &self,
         player_name: &str,
@@ -276,11 +236,7 @@ impl PlayerMonitor {
 }
 
 impl MacOSMediaWatcher<AppleScriptProvider> {
-    /// Creates a new macOS media watcher with the default AppleScript provider.
-    ///
-    /// # Returns
-    ///
-    /// Returns a `Result` containing the newly created watcher instance.
+    /// Creates a new macOS media watcher.
     pub async fn new() -> Result<Self> {
         Ok(Self {
             provider: Arc::new(AppleScriptProvider),
@@ -289,38 +245,11 @@ impl MacOSMediaWatcher<AppleScriptProvider> {
 }
 
 impl<P: PlayerStateProvider + 'static> MacOSMediaWatcher<P> {
-    /// Creates a new macOS media watcher with a custom provider.
-    ///
-    /// This constructor is primarily intended for testing purposes,
-    /// allowing injection of mock providers.
-    ///
-    /// # Arguments
-    ///
-    /// * `provider` - The player state provider to use
-    ///
-    /// # Returns
-    ///
-    /// Returns a new watcher instance using the provided provider.
     #[cfg(test)]
     pub fn with_provider(provider: Arc<P>) -> Self {
         Self { provider }
     }
 
-    /// Creates an event stream using the provided player state provider.
-    ///
-    /// This method creates a stream that emits `MediaEvent` items whenever media playback
-    /// state changes. The implementation uses periodic polling (every 1 second) to check
-    /// the state of available players.
-    ///
-    /// # Implementation Note
-    ///
-    /// An implementation using `NSDistributedNotificationCenter` was considered but not adopted
-    /// because it requires execution on the main thread. This polling-based approach using
-    /// a pluggable provider offers a simpler alternative that works in async contexts.
-    ///
-    /// # Returns
-    ///
-    /// Returns a stream that yields `MediaEvent` items when track changes are detected.
     fn create_event_stream_impl(provider: Arc<P>) -> impl Stream<Item = MediaEvent> {
         let (tx, rx) = mpsc::unbounded_channel();
 
@@ -388,18 +317,6 @@ impl<P: PlayerStateProvider + 'static> MediaWatcher for MacOSMediaWatcher<P> {
     }
 }
 
-/// Executes an AppleScript and returns its output.
-///
-/// This function spawns the `osascript` command asynchronously to execute the provided
-/// AppleScript code.
-///
-/// # Arguments
-///
-/// * `script` - The AppleScript code to execute
-///
-/// # Returns
-///
-/// Returns the trimmed stdout output of the script, or an error if execution fails.
 async fn execute_applescript(script: &str) -> Result<String> {
     let output = Command::new("osascript")
         .arg("-e")
@@ -420,17 +337,6 @@ async fn execute_applescript(script: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Parses the tab-separated output from AppleScript into a `PlayerState` structure.
-///
-/// The expected format is: `title\tartist\talbum\tplayerState\tposition\tvolume`
-///
-/// # Arguments
-///
-/// * `output` - The tab-separated string returned by AppleScript
-///
-/// # Returns
-///
-/// Returns `Some(PlayerState)` if the output can be parsed successfully, `None` otherwise.
 fn parse_apple_script_output(output: &str) -> Option<PlayerState> {
     let parts: Vec<&str> = output.split('\t').collect();
 

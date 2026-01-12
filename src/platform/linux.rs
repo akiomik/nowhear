@@ -13,35 +13,23 @@ use tokio::sync::{RwLock, mpsc};
 use tokio::time::interval;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-/// Trait for discovering and querying media players on the system.
-///
-/// This trait abstracts the mechanism for finding and interacting with
-/// media players, allowing for dependency injection and easier testing.
+// Internal trait for abstracting player discovery mechanisms
 pub trait PlayerDiscoveryProvider: Send + Sync {
-    /// Discover all available media players on the system.
     fn discover_players(&self) -> impl std::future::Future<Output = Result<Vec<String>>> + Send;
-
-    /// Get information about a specific player.
     fn get_player_info(
         &self,
         player_name: &str,
     ) -> impl std::future::Future<Output = Result<PlayerInfo>> + Send;
-
-    /// Create an event stream that monitors all available players.
     fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send;
 }
 
-/// MPRIS-based player discovery provider for Linux.
-///
-/// This provider uses the MPRIS D-Bus interface to discover and interact
-/// with media players on Linux systems.
+// MPRIS-based provider for Linux
 pub struct MprisProvider {
     finder: PlayerFinder,
     players: Arc<RwLock<HashMap<String, Player>>>,
 }
 
 impl MprisProvider {
-    /// Creates a new MPRIS provider.
     pub fn new() -> Result<Self> {
         let finder =
             PlayerFinder::new().map_err(|e| MediaWatcherError::ConnectionError(e.to_string()))?;
@@ -180,7 +168,6 @@ impl PlayerDiscoveryProvider for MprisProvider {
 }
 
 impl MprisProvider {
-    /// Monitor a single player's events using the MPRIS event API.
     fn monitor_player_events(
         player: Player,
         player_name: String,
@@ -272,17 +259,16 @@ impl MprisProvider {
     }
 }
 
+/// Linux media watcher implementation using MPRIS D-Bus interface.
 pub struct LinuxMediaWatcher<P: PlayerDiscoveryProvider = MprisProvider> {
     provider: Arc<P>,
 }
 
-/// Monitors player state changes and generates events
 struct PlayerMonitor {
     known_players: HashMap<String, Player>,
     last_states: HashMap<String, PlayerState>,
 }
 
-/// Represents the last known state of a player
 #[derive(Clone, Debug)]
 struct PlayerState {
     track: Option<Track>,
@@ -303,7 +289,6 @@ impl PlayerMonitor {
         &self.known_players
     }
 
-    /// Process current players and generate events for any changes
     fn process_players(&mut self, current_players: Vec<Player>) -> Vec<MediaEvent> {
         let mut events = Vec::new();
         let mut current_names = HashMap::new();
@@ -341,7 +326,6 @@ impl PlayerMonitor {
         events
     }
 
-    /// Get the current state of a player
     fn get_player_state(player: &Player) -> Option<PlayerState> {
         let metadata = player.get_metadata().ok()?;
         let playback_status = player.get_playback_status().ok()?;
@@ -367,7 +351,6 @@ impl PlayerMonitor {
         })
     }
 
-    /// Detect state changes and generate appropriate events
     fn detect_state_changes(
         &self,
         player_name: &str,
@@ -419,7 +402,6 @@ impl PlayerMonitor {
         }
     }
 
-    /// Detect significant position changes (seeks)
     fn detect_position_change(
         player_name: &str,
         current: &PlayerState,
@@ -445,7 +427,7 @@ impl PlayerMonitor {
 }
 
 impl LinuxMediaWatcher<MprisProvider> {
-    /// Creates a new Linux media watcher with the default MPRIS provider.
+    /// Creates a new Linux media watcher.
     pub async fn new() -> Result<Self> {
         Ok(Self {
             provider: Arc::new(MprisProvider::new()?),
@@ -454,8 +436,6 @@ impl LinuxMediaWatcher<MprisProvider> {
 }
 
 impl<P: PlayerDiscoveryProvider + 'static> LinuxMediaWatcher<P> {
-    /// Creates a new Linux media watcher with a custom provider.
-    /// This is primarily for testing purposes.
     #[cfg(test)]
     pub fn with_provider(provider: Arc<P>) -> Self {
         Self { provider }
@@ -477,10 +457,8 @@ impl<P: PlayerDiscoveryProvider + 'static> MediaWatcher for LinuxMediaWatcher<P>
     }
 }
 
-// Helper functions to convert MPRIS data to our types
+// Helper functions
 
-/// Extract player name from D-Bus bus name
-/// e.g., "org.mpris.MediaPlayer2.spotify" -> "spotify"
 fn extract_player_name(bus_name: &str) -> String {
     bus_name
         .strip_prefix("org.mpris.MediaPlayer2.")

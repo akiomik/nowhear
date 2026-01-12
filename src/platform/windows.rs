@@ -1,7 +1,4 @@
-//! Windows-specific implementation of the media watcher.
-//!
-//! This module provides media monitoring functionality for Windows using the
-//! Windows Media Control API (GlobalSystemMediaTransportControlsSessionManager).
+//! Windows-specific implementation using Windows Media Control API.
 
 #[cfg(target_os = "windows")]
 use crate::error::{MediaWatcherError, Result};
@@ -20,36 +17,24 @@ use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as WinPlaybackStatus,
 };
 
-/// Trait for discovering and querying media sessions on the system.
-///
-/// This trait abstracts the mechanism for finding and interacting with
-/// media sessions, allowing for dependency injection and easier testing.
+// Internal trait for abstracting media session access
 pub trait MediaSessionProvider: Send + Sync {
-    /// Get all current media sessions.
     fn get_all_sessions(
         &self,
     ) -> impl std::future::Future<Output = Result<HashMap<String, PlayerState>>> + Send;
-
-    /// Get information about a specific session.
     fn get_session_info(
         &self,
         session_id: &str,
     ) -> impl std::future::Future<Output = Result<PlayerInfo>> + Send;
-
-    /// Create an event stream that monitors all available sessions.
     fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send;
 }
 
-/// Windows Media Control API-based session provider.
-///
-/// This provider uses the Windows GlobalSystemMediaTransportControlsSessionManager
-/// to discover and interact with media players on Windows systems.
+// Windows Media Control provider
 pub struct WindowsMediaControlProvider {
     manager: SessionManager,
 }
 
 impl WindowsMediaControlProvider {
-    /// Creates a new Windows Media Control provider.
     pub async fn new() -> Result<Self> {
         let manager = SessionManager::RequestAsync()
             .map_err(|e| {
@@ -66,7 +51,6 @@ impl WindowsMediaControlProvider {
         Ok(Self { manager })
     }
 
-    /// Get all current media sessions as WinSession objects.
     async fn get_sessions(&self) -> Result<Vec<WinSession>> {
         let sessions = self.manager.GetSessions().map_err(|e| {
             MediaWatcherError::ConnectionError(format!("Failed to get sessions: {}", e))
@@ -75,7 +59,6 @@ impl WindowsMediaControlProvider {
         Ok(sessions.into_iter().collect())
     }
 
-    /// Extract the source app user model ID from a session.
     fn get_session_id(session: &WinSession) -> Result<String> {
         let app_id = session
             .SourceAppUserModelId()
@@ -84,7 +67,6 @@ impl WindowsMediaControlProvider {
         Ok(app_id.to_string())
     }
 
-    /// Get the current state of a session.
     async fn get_session_state(session: &WinSession) -> Result<PlayerState> {
         let media_props = session
             .TryGetMediaPropertiesAsync()
@@ -248,20 +230,12 @@ impl MediaSessionProvider for WindowsMediaControlProvider {
     }
 }
 
-/// Media watcher implementation for Windows.
-///
-/// This watcher monitors media players on Windows by using a pluggable
-/// MediaSessionProvider to query the current playback state.
+/// Windows media watcher implementation using Windows Media Control API.
 pub struct WindowsMediaWatcher<P: MediaSessionProvider = WindowsMediaControlProvider> {
     provider: Arc<P>,
 }
 
-/// Monitors player state changes and generates events for Windows players.
-///
-/// This structure tracks the state of multiple media sessions and detects
-/// changes to generate appropriate events.
 struct PlayerMonitor {
-    /// Current state of each player, keyed by player ID
     players: HashMap<String, PlayerState>,
 }
 
@@ -272,15 +246,6 @@ impl PlayerMonitor {
         }
     }
 
-    /// Process current sessions and generate events for any changes.
-    ///
-    /// # Arguments
-    ///
-    /// * `current_sessions` - Map of current session IDs to their states
-    ///
-    /// # Returns
-    ///
-    /// A vector of MediaEvent items representing detected changes
     fn process_sessions(
         &mut self,
         current_sessions: HashMap<String, PlayerState>,
@@ -329,7 +294,6 @@ impl PlayerMonitor {
         events
     }
 
-    /// Detect changes between last and current state and generate events.
     fn detect_changes(
         &self,
         player_name: &str,
@@ -384,7 +348,7 @@ impl PlayerMonitor {
 }
 
 impl WindowsMediaWatcher<WindowsMediaControlProvider> {
-    /// Creates a new Windows media watcher with the default Windows Media Control provider.
+    /// Creates a new Windows media watcher.
     pub async fn new() -> Result<Self> {
         Ok(Self {
             provider: Arc::new(WindowsMediaControlProvider::new().await?),
@@ -393,8 +357,6 @@ impl WindowsMediaWatcher<WindowsMediaControlProvider> {
 }
 
 impl<P: MediaSessionProvider + 'static> WindowsMediaWatcher<P> {
-    /// Creates a new Windows media watcher with a custom provider.
-    /// This is primarily for testing purposes.
     #[cfg(test)]
     pub fn with_provider(provider: Arc<P>) -> Self {
         Self { provider }
@@ -417,7 +379,6 @@ impl<P: MediaSessionProvider + 'static> MediaWatcher for WindowsMediaWatcher<P> 
     }
 }
 
-/// Parse Windows playback status to our PlaybackState enum.
 fn parse_playback_status(status: WinPlaybackStatus) -> PlaybackState {
     match status {
         WinPlaybackStatus::Playing => PlaybackState::Playing,

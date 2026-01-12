@@ -1,14 +1,51 @@
-//! # media-watcher
+//! # nowhear
 //!
 //! Cross-platform library for monitoring media playback information.
 //!
-//! ## Features
+//! This library provides a unified API to monitor media players across Linux, macOS, and Windows,
+//! allowing you to retrieve current track information and subscribe to playback events.
 //!
-//! - Get currently playing media information across Linux, macOS, and Windows
-//! - Subscribe to media events via async streams
-//! - Unified API across all platforms
+//! ## Platform Support
 //!
-//! ## Example
+//! - **Linux**: Uses MPRIS D-Bus interface
+//! - **macOS**: Uses AppleScript to query Music.app and Spotify
+//! - **Windows**: Uses Windows Media Control API (GlobalSystemMediaTransportControlsSessionManager)
+//!
+//! ## Basic Usage
+//!
+//! ### Listing Players
+//!
+//! ```no_run
+//! use nowhear::{MediaWatcher, MediaWatcherBuilder};
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let watcher = MediaWatcherBuilder::new().build().await?;
+//!     let players = watcher.list_players().await?;
+//!     println!("Available players: {:?}", players);
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ### Getting Player Information
+//!
+//! ```no_run
+//! use nowhear::{MediaWatcher, MediaWatcherBuilder};
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let watcher = MediaWatcherBuilder::new().build().await?;
+//!     let player_info = watcher.get_player("spotify").await?;
+//!
+//!     if let Some(track) = player_info.current_track {
+//!         println!("Now playing: {} by {}", track.title, track.artist.join(", "));
+//!     }
+//!
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ### Subscribing to Events
 //!
 //! ```no_run
 //! use nowhear::{MediaWatcher, MediaWatcherBuilder};
@@ -17,13 +54,12 @@
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let watcher = MediaWatcherBuilder::new().build().await?;
-//!     
-//!     // Subscribe to events
 //!     let mut stream = watcher.event_stream().await?;
+//!
 //!     while let Some(event) = stream.next().await {
 //!         println!("Event: {:?}", event);
 //!     }
-//!     
+//!
 //!     Ok(())
 //! }
 //! ```
