@@ -11,7 +11,7 @@
 //! ## Example
 //!
 //! ```no_run
-//! use nowhear::MediaWatcherBuilder;
+//! use nowhear::{MediaWatcher, MediaWatcherBuilder};
 //! use futures::StreamExt;
 //!
 //! #[tokio::main]

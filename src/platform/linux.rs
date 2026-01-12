@@ -2,7 +2,6 @@
 use crate::error::{MediaWatcherError, Result};
 use crate::types::{MediaEvent, PlaybackState, PlayerInfo, Track};
 use crate::watcher::{EventStream, MediaWatcher};
-use async_trait::async_trait;
 use futures::stream::{Stream, StreamExt};
 use mpris::{
     Event as MprisEvent, Metadata, PlaybackStatus as MprisPlaybackStatus, Player, PlayerFinder,
@@ -18,13 +17,15 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 ///
 /// This trait abstracts the mechanism for finding and interacting with
 /// media players, allowing for dependency injection and easier testing.
-#[async_trait]
 pub trait PlayerDiscoveryProvider: Send + Sync {
     /// Discover all available media players on the system.
-    async fn discover_players(&self) -> Result<Vec<String>>;
+    fn discover_players(&self) -> impl std::future::Future<Output = Result<Vec<String>>> + Send;
 
     /// Get information about a specific player.
-    async fn get_player_info(&self, player_name: &str) -> Result<PlayerInfo>;
+    fn get_player_info(
+        &self,
+        player_name: &str,
+    ) -> impl std::future::Future<Output = Result<PlayerInfo>> + Send;
 
     /// Create an event stream that monitors all available players.
     fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send;
@@ -52,7 +53,6 @@ impl MprisProvider {
     }
 }
 
-#[async_trait]
 impl PlayerDiscoveryProvider for MprisProvider {
     async fn discover_players(&self) -> Result<Vec<String>> {
         let players = self
@@ -272,8 +272,8 @@ impl MprisProvider {
     }
 }
 
-pub struct LinuxMediaWatcher {
-    provider: Arc<dyn PlayerDiscoveryProvider>,
+pub struct LinuxMediaWatcher<P: PlayerDiscoveryProvider = MprisProvider> {
+    provider: Arc<P>,
 }
 
 /// Monitors player state changes and generates events
@@ -444,24 +444,25 @@ impl PlayerMonitor {
     }
 }
 
-impl LinuxMediaWatcher {
+impl LinuxMediaWatcher<MprisProvider> {
     /// Creates a new Linux media watcher with the default MPRIS provider.
     pub async fn new() -> Result<Self> {
         Ok(Self {
             provider: Arc::new(MprisProvider::new()?),
         })
     }
+}
 
+impl<P: PlayerDiscoveryProvider + 'static> LinuxMediaWatcher<P> {
     /// Creates a new Linux media watcher with a custom provider.
     /// This is primarily for testing purposes.
     #[cfg(test)]
-    pub fn with_provider(provider: Arc<dyn PlayerDiscoveryProvider>) -> Self {
+    pub fn with_provider(provider: Arc<P>) -> Self {
         Self { provider }
     }
 }
 
-#[async_trait]
-impl MediaWatcher for LinuxMediaWatcher {
+impl<P: PlayerDiscoveryProvider + 'static> MediaWatcher for LinuxMediaWatcher<P> {
     async fn list_players(&self) -> Result<Vec<String>> {
         self.provider.discover_players().await
     }
@@ -557,7 +558,6 @@ mod tests {
         }
     }
 
-    #[async_trait]
     impl PlayerDiscoveryProvider for MockPlayerDiscoveryProvider {
         async fn discover_players(&self) -> Result<Vec<String>> {
             Ok(self.players.keys().cloned().collect())

@@ -1,5 +1,5 @@
 use futures::StreamExt;
-use nowhear::{MediaEvent, MediaWatcherBuilder, Result};
+use nowhear::{MediaEvent, MediaWatcher, MediaWatcherBuilder, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {

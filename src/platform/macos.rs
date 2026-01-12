@@ -7,7 +7,6 @@
 use crate::error::{MediaWatcherError, Result};
 use crate::types::{MediaEvent, PlaybackState, PlayerInfo, PlayerState, Track};
 use crate::watcher::{EventStream, MediaWatcher};
-use async_trait::async_trait;
 use futures::stream::Stream;
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,7 +19,6 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 ///
 /// This trait abstracts the mechanism for retrieving player state,
 /// allowing for dependency injection and easier testing.
-#[async_trait]
 pub trait PlayerStateProvider: Send + Sync {
     /// Get the current state of a specific player.
     ///
@@ -32,14 +30,19 @@ pub trait PlayerStateProvider: Send + Sync {
     ///
     /// Returns `Ok(Some(PlayerState))` if the player is running and has state,
     /// `Ok(None)` if the player is not running or has no state.
-    async fn get_player_state(&self, player_name: &str) -> Result<Option<PlayerState>>;
+    fn get_player_state(
+        &self,
+        player_name: &str,
+    ) -> impl std::future::Future<Output = Result<Option<PlayerState>>> + Send;
 
     /// List all available player names.
     ///
     /// # Returns
     ///
     /// Returns a vector of player names that are currently available.
-    async fn list_available_players(&self) -> Result<Vec<String>>;
+    fn list_available_players(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<String>>> + Send;
 }
 
 /// AppleScript-based player state provider for macOS.
@@ -48,7 +51,6 @@ pub trait PlayerStateProvider: Send + Sync {
 /// like Music.app and Spotify.
 pub struct AppleScriptProvider;
 
-#[async_trait]
 impl PlayerStateProvider for AppleScriptProvider {
     async fn get_player_state(&self, player_name: &str) -> Result<Option<PlayerState>> {
         match player_name {
@@ -133,8 +135,8 @@ impl AppleScriptProvider {
 ///
 /// This watcher monitors media players on macOS by using a pluggable
 /// PlayerStateProvider to query the current playback state.
-pub struct MacOSMediaWatcher {
-    provider: Arc<dyn PlayerStateProvider>,
+pub struct MacOSMediaWatcher<P: PlayerStateProvider = AppleScriptProvider> {
+    provider: Arc<P>,
 }
 
 /// Monitors player state changes and generates events for macOS players.
@@ -273,7 +275,7 @@ impl PlayerMonitor {
     }
 }
 
-impl MacOSMediaWatcher {
+impl MacOSMediaWatcher<AppleScriptProvider> {
     /// Creates a new macOS media watcher with the default AppleScript provider.
     ///
     /// # Returns
@@ -284,7 +286,9 @@ impl MacOSMediaWatcher {
             provider: Arc::new(AppleScriptProvider),
         })
     }
+}
 
+impl<P: PlayerStateProvider + 'static> MacOSMediaWatcher<P> {
     /// Creates a new macOS media watcher with a custom provider.
     ///
     /// This constructor is primarily intended for testing purposes,
@@ -298,7 +302,7 @@ impl MacOSMediaWatcher {
     ///
     /// Returns a new watcher instance using the provided provider.
     #[cfg(test)]
-    pub fn with_provider(provider: Arc<dyn PlayerStateProvider>) -> Self {
+    pub fn with_provider(provider: Arc<P>) -> Self {
         Self { provider }
     }
 
@@ -317,9 +321,7 @@ impl MacOSMediaWatcher {
     /// # Returns
     ///
     /// Returns a stream that yields `MediaEvent` items when track changes are detected.
-    fn create_event_stream_impl(
-        provider: Arc<dyn PlayerStateProvider>,
-    ) -> impl Stream<Item = MediaEvent> {
+    fn create_event_stream_impl(provider: Arc<P>) -> impl Stream<Item = MediaEvent> {
         let (tx, rx) = mpsc::unbounded_channel();
 
         tokio::spawn(async move {
@@ -361,8 +363,7 @@ impl MacOSMediaWatcher {
     }
 }
 
-#[async_trait]
-impl MediaWatcher for MacOSMediaWatcher {
+impl<P: PlayerStateProvider + 'static> MediaWatcher for MacOSMediaWatcher<P> {
     async fn list_players(&self) -> Result<Vec<String>> {
         self.provider.list_available_players().await
     }
@@ -514,7 +515,6 @@ mod tests {
         }
     }
 
-    #[async_trait]
     impl PlayerStateProvider for MockPlayerStateProvider {
         async fn get_player_state(&self, player_name: &str) -> Result<Option<PlayerState>> {
             Ok(self.states.get(player_name).cloned().flatten())

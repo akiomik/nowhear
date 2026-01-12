@@ -7,7 +7,6 @@
 use crate::error::{MediaWatcherError, Result};
 use crate::types::{MediaEvent, PlaybackState, PlayerInfo, PlayerState, Track};
 use crate::watcher::{EventStream, MediaWatcher};
-use async_trait::async_trait;
 use futures::stream::Stream;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,13 +24,17 @@ use windows::Media::Control::{
 ///
 /// This trait abstracts the mechanism for finding and interacting with
 /// media sessions, allowing for dependency injection and easier testing.
-#[async_trait]
 pub trait MediaSessionProvider: Send + Sync {
     /// Get all current media sessions.
-    async fn get_all_sessions(&self) -> Result<HashMap<String, PlayerState>>;
+    fn get_all_sessions(
+        &self,
+    ) -> impl std::future::Future<Output = Result<HashMap<String, PlayerState>>> + Send;
 
     /// Get information about a specific session.
-    async fn get_session_info(&self, session_id: &str) -> Result<PlayerInfo>;
+    fn get_session_info(
+        &self,
+        session_id: &str,
+    ) -> impl std::future::Future<Output = Result<PlayerInfo>> + Send;
 
     /// Create an event stream that monitors all available sessions.
     fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send;
@@ -157,7 +160,6 @@ impl WindowsMediaControlProvider {
     }
 }
 
-#[async_trait]
 impl MediaSessionProvider for WindowsMediaControlProvider {
     async fn get_all_sessions(&self) -> Result<HashMap<String, PlayerState>> {
         let sessions = self.get_sessions().await?;
@@ -250,8 +252,8 @@ impl MediaSessionProvider for WindowsMediaControlProvider {
 ///
 /// This watcher monitors media players on Windows by using a pluggable
 /// MediaSessionProvider to query the current playback state.
-pub struct WindowsMediaWatcher {
-    provider: Arc<dyn MediaSessionProvider>,
+pub struct WindowsMediaWatcher<P: MediaSessionProvider = WindowsMediaControlProvider> {
+    provider: Arc<P>,
 }
 
 /// Monitors player state changes and generates events for Windows players.
@@ -381,24 +383,25 @@ impl PlayerMonitor {
     }
 }
 
-impl WindowsMediaWatcher {
+impl WindowsMediaWatcher<WindowsMediaControlProvider> {
     /// Creates a new Windows media watcher with the default Windows Media Control provider.
     pub async fn new() -> Result<Self> {
         Ok(Self {
             provider: Arc::new(WindowsMediaControlProvider::new().await?),
         })
     }
+}
 
+impl<P: MediaSessionProvider + 'static> WindowsMediaWatcher<P> {
     /// Creates a new Windows media watcher with a custom provider.
     /// This is primarily for testing purposes.
     #[cfg(test)]
-    pub fn with_provider(provider: Arc<dyn MediaSessionProvider>) -> Self {
+    pub fn with_provider(provider: Arc<P>) -> Self {
         Self { provider }
     }
 }
 
-#[async_trait]
-impl MediaWatcher for WindowsMediaWatcher {
+impl<P: MediaSessionProvider + 'static> MediaWatcher for WindowsMediaWatcher<P> {
     async fn list_players(&self) -> Result<Vec<String>> {
         let sessions = self.provider.get_all_sessions().await?;
         Ok(sessions.keys().cloned().collect())
@@ -445,7 +448,6 @@ mod tests {
         }
     }
 
-    #[async_trait]
     impl MediaSessionProvider for MockMediaSessionProvider {
         async fn get_all_sessions(&self) -> Result<HashMap<String, PlayerState>> {
             Ok(self.sessions.clone())
