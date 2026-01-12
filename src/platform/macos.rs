@@ -351,7 +351,7 @@ async fn execute_applescript(script: &str) -> Result<String> {
         .output()
         .await
         .map_err(|e| {
-            MediaWatcherError::InternalError(format!("Failed to execute AppleScript: {}", e))
+            MediaWatcherError::InternalError(format!("Failed to execute AppleScript: {e}"))
         })?;
 
     if !output.status.success() {
