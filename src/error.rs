@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 /// Errors that can occur when using the media watcher.
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum MediaWatcherError {
     /// The requested player was not found or is not currently running.
     #[error("Player not found: {0}")]
