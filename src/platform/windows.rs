@@ -429,7 +429,7 @@ impl<P: MediaSessionProvider + 'static> MediaWatcher for WindowsMediaWatcher<P> 
         self.provider.get_session_info(player_name).await
     }
 
-    async fn event_stream(&self) -> Result<EventStream<'static>> {
+    async fn event_stream(&self) -> Result<EventStream> {
         let stream = self.provider.create_event_stream();
         Ok(Box::pin(stream))
     }

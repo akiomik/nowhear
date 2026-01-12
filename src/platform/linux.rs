@@ -347,7 +347,7 @@ impl<P: PlayerDiscoveryProvider + 'static> MediaWatcher for LinuxMediaWatcher<P>
         self.provider.get_player_info(player_name).await
     }
 
-    async fn event_stream(&self) -> Result<EventStream<'static>> {
+    async fn event_stream(&self) -> Result<EventStream> {
         let stream = self.provider.create_event_stream();
         Ok(Box::pin(stream))
     }

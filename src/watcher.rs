@@ -3,7 +3,7 @@ use crate::types::{MediaEvent, PlayerInfo};
 use futures::stream::BoxStream;
 
 /// Type alias for event stream returned by the media watcher.
-pub type EventStream<'a> = BoxStream<'a, MediaEvent>;
+pub type EventStream = BoxStream<'static, MediaEvent>;
 
 /// Main trait for media watching functionality.
 ///
@@ -83,9 +83,7 @@ pub trait MediaWatcher: Send + Sync {
     /// # Ok(())
     /// # }
     /// ```
-    fn event_stream(
-        &self,
-    ) -> impl std::future::Future<Output = Result<EventStream<'static>>> + Send;
+    fn event_stream(&self) -> impl std::future::Future<Output = Result<EventStream>> + Send;
 }
 
 /// Platform-specific media watcher implementation.
@@ -125,7 +123,7 @@ impl MediaWatcher for PlatformMediaWatcher {
         }
     }
 
-    async fn event_stream(&self) -> Result<EventStream<'static>> {
+    async fn event_stream(&self) -> Result<EventStream> {
         match self {
             #[cfg(target_os = "linux")]
             Self::Linux(w) => w.event_stream().await,
