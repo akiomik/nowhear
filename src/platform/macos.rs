@@ -336,7 +336,7 @@ impl<P: PlayerStateProvider + 'static> MediaWatcher for MacOSMediaWatcher<P> {
         }
     }
 
-    async fn event_stream(&self) -> Result<EventStream> {
+    async fn event_stream(&self) -> Result<EventStream<'static>> {
         let stream = Self::create_event_stream_impl(Arc::clone(&self.provider));
         Ok(Box::pin(stream))
     }
