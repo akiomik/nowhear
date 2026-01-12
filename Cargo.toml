@@ -12,13 +12,13 @@ categories = ["multimedia", "os"]
 
 [dependencies]
 futures = "0.3"
-thiserror = "1.0"
-tokio = { version = "1.0", features = ["macros", "process", "rt", "rt-multi-thread", "sync", "time"] }
+thiserror = "1"
+tokio = { version = "1", features = ["macros", "process", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-stream = "0.1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-mpris = "2.0"
-zbus = "4.0"
+mpris = "2"
+zbus = "4"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.52", features = [
