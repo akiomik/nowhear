@@ -2,9 +2,6 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum MediaWatcherError {
-    #[error("No active media player found")]
-    NoPlayerFound,
-
     #[error("Player not found: {0}")]
     PlayerNotFound(String),
 
@@ -16,9 +13,6 @@ pub enum MediaWatcherError {
 
     #[error("Platform not supported")]
     UnsupportedPlatform,
-
-    #[error("IO error: {0}")]
-    IoError(#[from] std::io::Error),
 
     #[error("Internal error: {0}")]
     InternalError(String),
