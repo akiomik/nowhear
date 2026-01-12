@@ -11,6 +11,9 @@ build-windows:
   # NOTE: requires `brew install mingw-w64` on macos
   cargo build --target x86_64-pc-windows-gnu
 
+test:
+  cargo test --all-targets --all-features
+
 clippy:
   cargo clippy --all-targets --all-features -- -D warnings
 

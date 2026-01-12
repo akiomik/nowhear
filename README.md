@@ -188,23 +188,23 @@ This will start monitoring for media events and print them to the console.
 - Volume information is not available through the Windows Media Control API
 - Polling interval: 1000ms
 
-## Testing
+## Development
 
-Run the test suite:
+Run build for all platforms:
 
 ```bash
-cargo test
+just build
 ```
 
-Run tests for a specific platform:
+Run build for a specific platform:
 
 ```bash
 # Linux
-cargo test --target x86_64-unknown-linux-gnu
+just build-linux
 
 # macOS
-cargo test --target x86_64-apple-darwin
+just build-macos
 
 # Windows
-cargo test --target x86_64-pc-windows-msvc
+just build-windows
 ```
