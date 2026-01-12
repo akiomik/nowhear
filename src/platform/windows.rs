@@ -11,11 +11,13 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::{interval, sleep};
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use windows::Foundation::IStringable;
 use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSession as WinSession,
     GlobalSystemMediaTransportControlsSessionManager as SessionManager,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as WinPlaybackStatus,
 };
+use windows::core::ComInterface;
 
 /// Internal player state representation for Windows implementation.
 ///
@@ -43,7 +45,7 @@ pub trait MediaSessionProvider: Send + Sync {
         &self,
         session_id: &str,
     ) -> impl std::future::Future<Output = Result<PlayerInfo>> + Send;
-    fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send;
+    fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send + 'static;
 }
 
 /// Windows Media Control provider.
@@ -59,57 +61,66 @@ impl WindowsMediaControlProvider {
     pub async fn new() -> Result<Self> {
         let manager = SessionManager::RequestAsync()
             .map_err(|e| {
-                MediaWatcherError::ConnectionError(format!("Failed to get session manager: {}", e))
+                MediaWatcherError::ConnectionError(format!("Failed to get session manager: {e}"))
             })?
             .await
             .map_err(|e| {
-                MediaWatcherError::ConnectionError(format!(
-                    "Failed to await session manager: {}",
-                    e
-                ))
+                MediaWatcherError::ConnectionError(format!("Failed to await session manager: {e}"))
             })?;
 
         Ok(Self { manager })
     }
 
-    async fn get_sessions(&self) -> Result<Vec<WinSession>> {
+    fn get_sessions(&self) -> Result<Vec<WinSession>> {
         let sessions = self.manager.GetSessions().map_err(|e| {
-            MediaWatcherError::ConnectionError(format!("Failed to get sessions: {}", e))
+            MediaWatcherError::ConnectionError(format!("Failed to get sessions: {e}"))
         })?;
 
-        Ok(sessions.into_iter().collect())
+        let mut result = Vec::new();
+        let size = sessions.Size().map_err(|e| {
+            MediaWatcherError::ConnectionError(format!("Failed to get sessions size: {e}"))
+        })?;
+
+        for i in 0..size {
+            if let Ok(session) = sessions.GetAt(i) {
+                result.push(session);
+            }
+        }
+
+        Ok(result)
     }
 
     fn get_session_id(session: &WinSession) -> Result<String> {
         let app_id = session
             .SourceAppUserModelId()
-            .map_err(|e| MediaWatcherError::ParseError(format!("Failed to get app ID: {}", e)))?;
+            .map_err(|e| MediaWatcherError::ParseError(format!("Failed to get app ID: {e}")))?;
 
         Ok(app_id.to_string())
     }
 
+    #[allow(clippy::cast_sign_loss)]
     async fn get_session_state(session: &WinSession) -> Result<PlayerState> {
         let media_props = session
             .TryGetMediaPropertiesAsync()
             .map_err(|e| {
-                MediaWatcherError::ParseError(format!("Failed to get media properties: {}", e))
+                MediaWatcherError::ParseError(format!("Failed to get media properties: {e}"))
             })?
             .await
             .map_err(|e| {
-                MediaWatcherError::ParseError(format!("Failed to await media properties: {}", e))
+                MediaWatcherError::ParseError(format!("Failed to await media properties: {e}"))
             })?;
 
         let playback_info = session.GetPlaybackInfo().map_err(|e| {
-            MediaWatcherError::ParseError(format!("Failed to get playback info: {}", e))
+            MediaWatcherError::ParseError(format!("Failed to get playback info: {e}"))
         })?;
 
         let playback_status = playback_info.PlaybackStatus().map_err(|e| {
-            MediaWatcherError::ParseError(format!("Failed to get playback status: {}", e))
+            MediaWatcherError::ParseError(format!("Failed to get playback status: {e}"))
         })?;
 
         let timeline = session
             .GetTimelineProperties()
-            .map_err(|e| MediaWatcherError::ParseError(format!("Failed to get timeline: {}", e)))?;
+            .map_err(|e| MediaWatcherError::ParseError(format!("Failed to get timeline: {e}")))?;
 
         let title = media_props.Title().unwrap_or_default().to_string();
 
@@ -123,13 +134,18 @@ impl WindowsMediaControlProvider {
         let album_title = media_props.AlbumTitle().ok();
         let album = album_title.map(|s| s.to_string()).filter(|s| !s.is_empty());
 
-        let track_number = media_props.TrackNumber().ok();
+        let track_number = media_props.TrackNumber().ok().map(|number| number as u32);
 
         let art_url = media_props
             .Thumbnail()
             .ok()
-            .and_then(|thumb| thumb.ToString().ok())
-            .map(|s| s.to_string())
+            .and_then(|thumb| {
+                thumb
+                    .cast::<IStringable>()
+                    .ok()
+                    .and_then(|stringable| stringable.ToString().ok())
+                    .map(|s| s.to_string())
+            })
             .filter(|s| !s.is_empty());
 
         let position_ticks = timeline.Position().ok();
@@ -165,14 +181,14 @@ impl WindowsMediaControlProvider {
 
 impl MediaSessionProvider for WindowsMediaControlProvider {
     async fn get_all_sessions(&self) -> Result<HashMap<String, PlayerState>> {
-        let sessions = self.get_sessions().await?;
+        let sessions = self.get_sessions()?;
         let mut session_states = HashMap::new();
 
         for session in sessions {
-            if let Ok(session_id) = Self::get_session_id(&session) {
-                if let Ok(state) = Self::get_session_state(&session).await {
-                    session_states.insert(session_id, state);
-                }
+            if let Ok(session_id) = Self::get_session_id(&session)
+                && let Ok(state) = Self::get_session_state(&session).await
+            {
+                session_states.insert(session_id, state);
             }
         }
 
@@ -180,7 +196,7 @@ impl MediaSessionProvider for WindowsMediaControlProvider {
     }
 
     async fn get_session_info(&self, session_id: &str) -> Result<PlayerInfo> {
-        let sessions = self.get_sessions().await?;
+        let sessions = self.get_sessions()?;
 
         for session in sessions {
             let id = Self::get_session_id(&session)?;
@@ -199,7 +215,7 @@ impl MediaSessionProvider for WindowsMediaControlProvider {
         Err(MediaWatcherError::PlayerNotFound(session_id.to_string()))
     }
 
-    fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send {
+    fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send + 'static {
         let manager = self.manager.clone();
         let (tx, rx) = mpsc::unbounded_channel();
 
@@ -210,22 +226,38 @@ impl MediaSessionProvider for WindowsMediaControlProvider {
             loop {
                 poll_interval.tick().await;
 
-                let sessions = match manager.GetSessions() {
-                    Ok(sessions) => sessions,
-                    Err(_) => {
-                        sleep(Duration::from_secs(1)).await;
-                        continue;
-                    }
+                let sessions_vec = {
+                    let sessions_result = manager.GetSessions();
+                    sessions_result.map_or_else(
+                        |_| None,
+                        |sessions| {
+                            let size_result = sessions.Size();
+                            let mut vec = Vec::new();
+                            if let Ok(size) = size_result {
+                                for i in 0..size {
+                                    if let Ok(session) = sessions.GetAt(i) {
+                                        vec.push(session);
+                                    }
+                                }
+                            }
+                            Some(vec)
+                        },
+                    )
+                };
+
+                let Some(sessions_vec) = sessions_vec else {
+                    sleep(Duration::from_secs(1)).await;
+                    continue;
                 };
 
                 let mut current_states = HashMap::new();
                 let mut futures = Vec::new();
                 let mut session_ids = Vec::new();
 
-                for session in sessions {
-                    if let Ok(session_id) = WindowsMediaControlProvider::get_session_id(&session) {
+                for session in &sessions_vec {
+                    if let Ok(session_id) = Self::get_session_id(session) {
                         session_ids.push(session_id);
-                        futures.push(WindowsMediaControlProvider::get_session_state(&session));
+                        futures.push(Self::get_session_state(session));
                     }
                 }
 
@@ -280,7 +312,7 @@ impl PlayerMonitor {
         for (session_id, current_state) in &current_sessions {
             if let Some(last_state) = self.players.get(session_id) {
                 // Existing player - detect changes
-                self.detect_changes(session_id, last_state, current_state, &mut events);
+                Self::detect_changes(session_id, last_state, current_state, &mut events);
             } else {
                 // New player
                 events.push(MediaEvent::PlayerAdded {
@@ -319,7 +351,6 @@ impl PlayerMonitor {
     }
 
     fn detect_changes(
-        &self,
         player_name: &str,
         last: &PlayerState,
         current: &PlayerState,
@@ -343,13 +374,11 @@ impl PlayerMonitor {
 
         // Check for position change (seek detection)
         if let Some(current_pos) = current.position {
-            let should_emit = if let Some(last_pos) = last.position {
+            let should_emit = last.position.is_none_or(|last_pos| {
                 // Detect seek: position difference > 2 seconds
                 let diff = current_pos.abs_diff(last_pos);
                 diff > Duration::from_secs(2)
-            } else {
-                true // First position
-            };
+            });
 
             if should_emit {
                 events.push(MediaEvent::PositionChanged {
@@ -360,13 +389,13 @@ impl PlayerMonitor {
         }
 
         // Check for volume change
-        if current.volume != last.volume {
-            if let Some(vol) = current.volume {
-                events.push(MediaEvent::VolumeChanged {
-                    player_name: player_name.to_string(),
-                    volume: vol,
-                });
-            }
+        if current.volume != last.volume
+            && let Some(vol) = current.volume
+        {
+            events.push(MediaEvent::VolumeChanged {
+                player_name: player_name.to_string(),
+                volume: vol,
+            });
         }
     }
 }
@@ -385,7 +414,7 @@ impl WindowsMediaWatcher<WindowsMediaControlProvider> {
 
 impl<P: MediaSessionProvider + 'static> WindowsMediaWatcher<P> {
     #[cfg(test)]
-    pub fn with_provider(provider: Arc<P>) -> Self {
+    pub const fn with_provider(provider: Arc<P>) -> Self {
         Self { provider }
     }
 }
@@ -400,13 +429,13 @@ impl<P: MediaSessionProvider + 'static> MediaWatcher for WindowsMediaWatcher<P> 
         self.provider.get_session_info(player_name).await
     }
 
-    async fn event_stream(&self) -> Result<EventStream> {
+    async fn event_stream(&self) -> Result<EventStream<'static>> {
         let stream = self.provider.create_event_stream();
         Ok(Box::pin(stream))
     }
 }
 
-fn parse_playback_status(status: WinPlaybackStatus) -> PlaybackState {
+const fn parse_playback_status(status: WinPlaybackStatus) -> PlaybackState {
     match status {
         WinPlaybackStatus::Playing => PlaybackState::Playing,
         WinPlaybackStatus::Paused => PlaybackState::Paused,
@@ -454,7 +483,7 @@ mod tests {
                 .ok_or_else(|| MediaWatcherError::PlayerNotFound(session_id.to_string()))
         }
 
-        fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send {
+        fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send + 'static {
             futures::stream::empty()
         }
     }
@@ -520,7 +549,7 @@ mod tests {
     async fn test_list_players_with_multiple_sessions() -> Result<()> {
         let spotify_track = create_test_track_for_windows("Spotify Song");
         let spotify_state = create_test_state_for_windows(
-            "",
+            spotify_track,
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
         );
@@ -583,7 +612,9 @@ mod tests {
         let result = watcher.get_player("nonexistent.exe").await;
         assert_eq!(
             result,
-            Err(MediaWatcherError::PlayerNotFound("nonexistent.exe"))
+            Err(MediaWatcherError::PlayerNotFound(
+                "nonexistent.exe".to_string()
+            ))
         );
     }
 
@@ -668,11 +699,10 @@ mod tests {
         let mut sessions = HashMap::new();
 
         let track = create_test_track_for_windows("Song 1");
-        let state = create_test_player_state_with_track(
+        let state = create_test_state_for_windows(
             track.clone(),
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
-            None,
         );
         sessions.insert("Spotify.exe".to_string(), state);
 
@@ -704,11 +734,10 @@ mod tests {
         // Initial state
         let mut initial_sessions = HashMap::new();
         let track1 = create_test_track_for_windows("Song 1");
-        let initial_state = create_test_player_state(
+        let initial_state = create_test_state_for_windows(
             track1,
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
-            None,
         );
         initial_sessions.insert("Spotify.exe".to_string(), initial_state);
         monitor.process_sessions(initial_sessions);
@@ -716,11 +745,10 @@ mod tests {
         // New state with different track
         let mut new_sessions = HashMap::new();
         let track2 = create_test_track_for_windows("Song 2");
-        let new_state = create_test_player_state(
+        let new_state = create_test_state_for_windows(
             track2.clone(),
             PlaybackState::Playing,
             Some(Duration::from_secs(11)),
-            None,
         );
         new_sessions.insert("Spotify.exe".to_string(), new_state);
         let events = monitor.process_sessions(new_sessions);
@@ -742,11 +770,10 @@ mod tests {
         // Initial state
         let mut initial_sessions = HashMap::new();
         let track = create_test_track_for_windows("Song 1");
-        let initial_state = create_test_player_state(
-            track.clone(),
+        let initial_state = create_test_state_for_windows(
+            track,
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
-            None,
         );
         initial_sessions.insert("Spotify.exe".to_string(), initial_state);
         monitor.process_sessions(initial_sessions);
@@ -754,11 +781,10 @@ mod tests {
         // New state with different playback state
         let mut new_sessions = HashMap::new();
         let track = create_test_track_for_windows("Song 1");
-        let new_state = create_test_player_state(
+        let new_state = create_test_state_for_windows(
             track,
             PlaybackState::Paused,
             Some(Duration::from_secs(10)),
-            None,
         );
         new_sessions.insert("Spotify.exe".to_string(), new_state);
         let events = monitor.process_sessions(new_sessions);
@@ -780,22 +806,20 @@ mod tests {
         // Initial state
         let mut initial_sessions = HashMap::new();
         let track = create_test_track_for_windows("Song 1");
-        let initial_state = create_test_player_state(
+        let initial_state = create_test_state_for_windows(
             track.clone(),
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
-            None,
         );
         initial_sessions.insert("Spotify.exe".to_string(), initial_state);
         monitor.process_sessions(initial_sessions);
 
         // New state with significant position jump
         let mut new_sessions = HashMap::new();
-        let new_state = create_test_player_state(
+        let new_state = create_test_state_for_windows(
             track,
             PlaybackState::Playing,
             Some(Duration::from_secs(60)),
-            None,
         );
         new_sessions.insert("Spotify.exe".to_string(), new_state);
         let events = monitor.process_sessions(new_sessions);
@@ -817,22 +841,20 @@ mod tests {
         // Initial state
         let mut initial_sessions = HashMap::new();
         let track = create_test_track_for_windows("Song 1");
-        let initial_state = create_test_player_state(
+        let initial_state = create_test_state_for_windows(
             track.clone(),
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
-            None,
         );
         initial_sessions.insert("Spotify.exe".to_string(), initial_state);
         monitor.process_sessions(initial_sessions);
 
         // New state with normal 1 second progression
         let mut new_sessions = HashMap::new();
-        let new_state = create_test_player_state(
+        let new_state = create_test_state_for_windows(
             track,
             PlaybackState::Playing,
             Some(Duration::from_secs(11)),
-            None,
         );
         new_sessions.insert("Spotify.exe".to_string(), new_state);
         let events = monitor.process_sessions(new_sessions);
@@ -848,11 +870,10 @@ mod tests {
         // Initial state - player running
         let mut initial_sessions = HashMap::new();
         let track = create_test_track_for_windows("Song 1");
-        let initial_state = create_test_player_state(
+        let initial_state = create_test_state_for_windows(
             track,
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
-            None,
         );
         initial_sessions.insert("Spotify.exe".to_string(), initial_state);
         monitor.process_sessions(initial_sessions);
@@ -880,21 +901,19 @@ mod tests {
 
         // Add Spotify
         let track1 = create_test_track_for_windows("Song 1");
-        let spotify_state = create_test_player_state(
+        let spotify_state = create_test_state_for_windows(
             track1,
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
-            None,
         );
         sessions.insert("Spotify.exe".to_string(), spotify_state);
 
         // Add VLC
         let track2 = create_test_track_for_windows("Song 2");
-        let vlc_state = create_test_player_state(
+        let vlc_state = create_test_state_for_windows(
             track2,
             PlaybackState::Playing,
             Some(Duration::from_secs(5)),
-            None,
         );
         sessions.insert("vlc.exe".to_string(), vlc_state);
 
@@ -916,11 +935,10 @@ mod tests {
         // Initial state
         let mut initial_sessions = HashMap::new();
         let track1 = create_test_track_for_windows("Song 1");
-        let initial_state = create_test_player_state(
+        let initial_state = create_test_state_for_windows(
             track1,
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
-            None,
         );
         initial_sessions.insert("Spotify.exe".to_string(), initial_state);
         monitor.process_sessions(initial_sessions);
@@ -928,11 +946,10 @@ mod tests {
         // New state with multiple changes
         let mut new_sessions = HashMap::new();
         let track2 = create_test_track_for_windows("Song 2");
-        let new_state = create_test_player_state(
+        let new_state = create_test_state_for_windows(
             track2.clone(),
             PlaybackState::Paused,
             Some(Duration::from_secs(60)),
-            None,
         );
         new_sessions.insert("Spotify.exe".to_string(), new_state);
         let events = monitor.process_sessions(new_sessions);
@@ -951,7 +968,7 @@ mod tests {
                 },
                 MediaEvent::PositionChanged {
                     player_name: "Spotify.exe".to_string(),
-                    position: Some(Duration::from_secs(60)),
+                    position: Duration::from_secs(60),
                 },
             ]
         );
@@ -963,13 +980,13 @@ mod tests {
 
         // Initial state
         let mut sessions = HashMap::new();
-        let state = create_test_player_state(
-            "Song 1",
+        let track = create_test_track_for_windows("Song 1");
+        let state = create_test_state_for_windows(
+            track,
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
-            None,
         );
-        sessions.insert("Spotify.exe".to_string(), state.clone());
+        sessions.insert("Spotify.exe".to_string(), state);
         monitor.process_sessions(sessions.clone());
 
         // Same state again
