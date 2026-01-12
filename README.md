@@ -38,17 +38,16 @@ futures = "0.3"
 ### Basic Example
 
 ```rust
-use nowhear::MediaWatcherBuilder;
-use futures::StreamExt;
+use nowhear::{MediaWatcher, MediaWatcherBuilder, Result};
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
     // Create a media watcher
     let watcher = MediaWatcherBuilder::new().build().await?;
     
     // List all active media players
     let players = watcher.list_players().await?;
-    println!("Active players: {:?}", players);
+    println!("Active players: {players:?}");
     
     // Get information for a specific player
     if let Some(player_name) = players.first() {
@@ -67,11 +66,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Event Stream Example
 
 ```rust
-use nowhear::{MediaEvent, MediaWatcherBuilder};
 use futures::StreamExt;
+use nowhear::{MediaEvent, MediaWatcher, MediaWatcherBuilder, Result};
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
     let watcher = MediaWatcherBuilder::new().build().await?;
     
     // Create an event stream
