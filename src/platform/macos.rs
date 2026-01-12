@@ -384,9 +384,11 @@ fn parse_apple_script_output(output: &str) -> Option<PlayerState> {
 
         // Parse the playback state from the 4th field if available
         let playback_state = if parts.len() >= 4 {
+            #[allow(clippy::match_same_arms)]
             match parts[3].trim().to_lowercase().as_str() {
-                "playing" => PlaybackState::Playing,
+                "playing" | "fast forwarding" | "rewinding" => PlaybackState::Playing,
                 "paused" => PlaybackState::Paused,
+                "stopped" => PlaybackState::Stopped,
                 _ => PlaybackState::Playing, // Default to Playing for unknown states
             }
         } else {
@@ -769,9 +771,19 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_applescript_output_with_stopped_state() {
+        let output = "Title\tArtist\tAlbum\tstopped\t0\t0";
+        let result = parse_apple_script_output(output);
+
+        assert!(result.is_some());
+        let player_state = result.unwrap();
+        assert_eq!(player_state.playback_state, PlaybackState::Stopped);
+    }
+
+    #[test]
     fn test_parse_applescript_output_with_unknown_state() {
         // Test unknown state defaults to Playing
-        let output = "Title\tArtist\tAlbum\tstopped\t0\t0";
+        let output = "Title\tArtist\tAlbum\tunknown\t0\t0";
         let result = parse_apple_script_output(output);
 
         assert!(result.is_some());
