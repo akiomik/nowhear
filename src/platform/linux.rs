@@ -14,10 +14,266 @@ use tokio::sync::{RwLock, mpsc};
 use tokio::time::interval;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-pub struct LinuxMediaWatcher {
+/// Trait for discovering and querying media players on the system.
+///
+/// This trait abstracts the mechanism for finding and interacting with
+/// media players, allowing for dependency injection and easier testing.
+#[async_trait]
+pub trait PlayerDiscoveryProvider: Send + Sync {
+    /// Discover all available media players on the system.
+    async fn discover_players(&self) -> Result<Vec<String>>;
+
+    /// Get information about a specific player.
+    async fn get_player_info(&self, player_name: &str) -> Result<PlayerInfo>;
+
+    /// Create an event stream that monitors all available players.
+    fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send;
+}
+
+/// MPRIS-based player discovery provider for Linux.
+///
+/// This provider uses the MPRIS D-Bus interface to discover and interact
+/// with media players on Linux systems.
+pub struct MprisProvider {
     finder: PlayerFinder,
-    // Cache of known players
     players: Arc<RwLock<HashMap<String, Player>>>,
+}
+
+impl MprisProvider {
+    /// Creates a new MPRIS provider.
+    pub fn new() -> Result<Self> {
+        let finder =
+            PlayerFinder::new().map_err(|e| MediaWatcherError::ConnectionError(e.to_string()))?;
+
+        Ok(Self {
+            finder,
+            players: Arc::new(RwLock::new(HashMap::new())),
+        })
+    }
+}
+
+#[async_trait]
+impl PlayerDiscoveryProvider for MprisProvider {
+    async fn discover_players(&self) -> Result<Vec<String>> {
+        let players = self
+            .finder
+            .find_all()
+            .map_err(|e| MediaWatcherError::ConnectionError(e.to_string()))?;
+
+        let player_names: Vec<String> = players
+            .iter()
+            .map(|p| extract_player_name(p.bus_name()))
+            .collect();
+
+        // Update cache
+        let mut cache = self.players.write().await;
+        cache.clear();
+        for player in players {
+            let name = extract_player_name(player.bus_name());
+            cache.insert(name, player);
+        }
+
+        Ok(player_names)
+    }
+
+    async fn get_player_info(&self, player_name: &str) -> Result<PlayerInfo> {
+        let players = self.players.read().await;
+        let player = players
+            .get(player_name)
+            .ok_or_else(|| MediaWatcherError::PlayerNotFound(player_name.to_string()))?;
+
+        let metadata = player
+            .get_metadata()
+            .map_err(|e| MediaWatcherError::ParseError(e.to_string()))?;
+
+        let playback_status = player
+            .get_playback_status()
+            .map_err(|e| MediaWatcherError::ParseError(e.to_string()))?;
+
+        let position = player
+            .get_position()
+            .ok()
+            .map(|micros| Duration::from_micros(micros as u64));
+
+        let volume = player.get_volume().ok();
+
+        let current_track =
+            if metadata.title().is_some() || !metadata.artists().unwrap_or(&[]).is_empty() {
+                Some(parse_metadata(&metadata))
+            } else {
+                None
+            };
+
+        Ok(PlayerInfo {
+            player_name: player_name.to_string(),
+            current_track,
+            playback_state: parse_playback_status(playback_status),
+            position,
+            volume,
+        })
+    }
+
+    fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send {
+        let finder = self.finder.clone();
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        tokio::spawn(async move {
+            let mut player_tasks: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+            let mut discovery_interval = interval(Duration::from_secs(2));
+
+            loop {
+                discovery_interval.tick().await;
+
+                let current_players = match finder.find_all() {
+                    Ok(players) => players,
+                    Err(_) => continue,
+                };
+
+                let mut current_player_names = std::collections::HashSet::new();
+
+                for player in current_players {
+                    let player_name = extract_player_name(player.bus_name());
+                    current_player_names.insert(player_name.clone());
+
+                    if !player_tasks.contains_key(&player_name) {
+                        let tx_clone = tx.clone();
+                        let name_clone = player_name.clone();
+
+                        let _ = tx.send(MediaEvent::PlayerAdded {
+                            player_name: player_name.clone(),
+                        });
+
+                        let handle = tokio::task::spawn_blocking(move || {
+                            Self::monitor_player_events(player, name_clone, tx_clone);
+                        });
+
+                        player_tasks.insert(player_name, handle);
+                    }
+                }
+
+                let removed_players: Vec<String> = player_tasks
+                    .keys()
+                    .filter(|name| !current_player_names.contains(*name))
+                    .cloned()
+                    .collect();
+
+                for player_name in removed_players {
+                    if let Some(handle) = player_tasks.remove(&player_name) {
+                        handle.abort();
+                        let _ = tx.send(MediaEvent::PlayerRemoved {
+                            player_name: player_name.clone(),
+                        });
+                    }
+                }
+
+                if tx.is_closed() {
+                    for (_, handle) in player_tasks {
+                        handle.abort();
+                    }
+                    return;
+                }
+            }
+        });
+
+        UnboundedReceiverStream::new(rx)
+    }
+}
+
+impl MprisProvider {
+    /// Monitor a single player's events using the MPRIS event API.
+    fn monitor_player_events(
+        player: Player,
+        player_name: String,
+        tx: mpsc::UnboundedSender<MediaEvent>,
+    ) {
+        if let Ok(mut events) = player.events() {
+            let mut last_track: Option<Track> = None;
+            let mut last_volume: Option<f64> = None;
+
+            // Send initial state
+            if let Ok(metadata) = player.get_metadata() {
+                if metadata.title().is_some() || !metadata.artists().unwrap_or(&[]).is_empty() {
+                    let track = parse_metadata(&metadata);
+                    let _ = tx.send(MediaEvent::TrackChanged {
+                        player_name: player_name.clone(),
+                        track: track.clone(),
+                    });
+                    last_track = Some(track);
+                }
+            }
+
+            if let Ok(status) = player.get_playback_status() {
+                let _ = tx.send(MediaEvent::StateChanged {
+                    player_name: player_name.clone(),
+                    state: parse_playback_status(status),
+                });
+            }
+
+            // Process events as they arrive
+            for event_result in &mut events {
+                match event_result {
+                    Ok(MprisEvent::Playing) => {
+                        let _ = tx.send(MediaEvent::StateChanged {
+                            player_name: player_name.clone(),
+                            state: PlaybackState::Playing,
+                        });
+                    }
+                    Ok(MprisEvent::Paused) => {
+                        let _ = tx.send(MediaEvent::StateChanged {
+                            player_name: player_name.clone(),
+                            state: PlaybackState::Paused,
+                        });
+                    }
+                    Ok(MprisEvent::Stopped) => {
+                        let _ = tx.send(MediaEvent::StateChanged {
+                            player_name: player_name.clone(),
+                            state: PlaybackState::Stopped,
+                        });
+                    }
+                    Ok(MprisEvent::TrackChanged(metadata)) => {
+                        let track = parse_metadata(&metadata);
+                        if last_track.as_ref() != Some(&track) {
+                            let _ = tx.send(MediaEvent::TrackChanged {
+                                player_name: player_name.clone(),
+                                track: track.clone(),
+                            });
+                            last_track = Some(track);
+                        }
+                    }
+                    Ok(MprisEvent::VolumeChanged(volume)) => {
+                        if last_volume != Some(volume) {
+                            let _ = tx.send(MediaEvent::VolumeChanged {
+                                player_name: player_name.clone(),
+                                volume,
+                            });
+                            last_volume = Some(volume);
+                        }
+                    }
+                    Ok(MprisEvent::Seeked { position }) => {
+                        let _ = tx.send(MediaEvent::PositionChanged {
+                            player_name: player_name.clone(),
+                            position: Duration::from_micros(position as u64),
+                        });
+                    }
+                    Ok(MprisEvent::PlayerShutDown) => {
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(_) => {
+                        break;
+                    }
+                }
+
+                if tx.is_closed() {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+pub struct LinuxMediaWatcher {
+    provider: Arc<dyn PlayerDiscoveryProvider>,
 }
 
 /// Monitors player state changes and generates events
@@ -189,263 +445,33 @@ impl PlayerMonitor {
 }
 
 impl LinuxMediaWatcher {
+    /// Creates a new Linux media watcher with the default MPRIS provider.
     pub async fn new() -> Result<Self> {
-        let finder =
-            PlayerFinder::new().map_err(|e| MediaWatcherError::ConnectionError(e.to_string()))?;
-
         Ok(Self {
-            finder,
-            players: Arc::new(RwLock::new(HashMap::new())),
+            provider: Arc::new(MprisProvider::new()?),
         })
     }
 
-    async fn discover_players(&self) -> Result<Vec<String>> {
-        // MPRIS players have names like "org.mpris.MediaPlayer2.spotify"
-        // Use the mpris crate to find all MPRIS players
-        let players = self
-            .finder
-            .find_all()
-            .map_err(|e| MediaWatcherError::ConnectionError(e.to_string()))?;
-
-        let player_names: Vec<String> = players
-            .iter()
-            .map(|p| extract_player_name(p.bus_name()))
-            .collect();
-
-        // Update cache
-        let mut cache = self.players.write().await;
-        cache.clear();
-        for player in players {
-            let name = extract_player_name(player.bus_name());
-            cache.insert(name, player);
-        }
-
-        Ok(player_names)
-    }
-
-    async fn get_player_info(&self, player_name: &str) -> Result<PlayerInfo> {
-        // First, try to get from cache
-        let players = self.players.read().await;
-        let player = players
-            .get(player_name)
-            .ok_or_else(|| MediaWatcherError::PlayerNotFound(player_name.to_string()))?;
-
-        // Query player metadata and status
-        let metadata = player
-            .get_metadata()
-            .map_err(|e| MediaWatcherError::ParseError(e.to_string()))?;
-
-        let playback_status = player
-            .get_playback_status()
-            .map_err(|e| MediaWatcherError::ParseError(e.to_string()))?;
-
-        let position = player
-            .get_position()
-            .ok()
-            .map(|micros| Duration::from_micros(micros as u64));
-
-        let volume = player.get_volume().ok();
-
-        let current_track =
-            if metadata.title().is_some() || !metadata.artists().unwrap_or(&[]).is_empty() {
-                Some(parse_metadata(&metadata))
-            } else {
-                None
-            };
-
-        Ok(PlayerInfo {
-            player_name: player_name.to_string(),
-            current_track,
-            playback_state: parse_playback_status(playback_status),
-            position,
-            volume,
-        })
-    }
-
-    fn create_event_stream_impl(&self) -> impl Stream<Item = MediaEvent> {
-        let finder = self.finder.clone();
-        let (tx, rx) = mpsc::unbounded_channel();
-
-        tokio::spawn(async move {
-            let mut player_tasks: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
-            let mut discovery_interval = interval(Duration::from_secs(2));
-
-            loop {
-                discovery_interval.tick().await;
-
-                // Discover current players
-                let current_players = match finder.find_all() {
-                    Ok(players) => players,
-                    Err(_) => continue,
-                };
-
-                let mut current_player_names = std::collections::HashSet::new();
-
-                // Start monitoring tasks for new players
-                for player in current_players {
-                    let player_name = extract_player_name(player.bus_name());
-                    current_player_names.insert(player_name.clone());
-
-                    // Start a new task if this player is not being monitored
-                    if !player_tasks.contains_key(&player_name) {
-                        let tx_clone = tx.clone();
-                        let name_clone = player_name.clone();
-
-                        // Notify that player was added
-                        let _ = tx.send(MediaEvent::PlayerAdded {
-                            player_name: player_name.clone(),
-                        });
-
-                        // Spawn a task to monitor this player's events
-                        let handle = tokio::task::spawn_blocking(move || {
-                            Self::monitor_player_events(player, name_clone, tx_clone);
-                        });
-
-                        player_tasks.insert(player_name, handle);
-                    }
-                }
-
-                // Clean up tasks for players that no longer exist
-                let removed_players: Vec<String> = player_tasks
-                    .keys()
-                    .filter(|name| !current_player_names.contains(*name))
-                    .cloned()
-                    .collect();
-
-                for player_name in removed_players {
-                    if let Some(handle) = player_tasks.remove(&player_name) {
-                        handle.abort();
-                        let _ = tx.send(MediaEvent::PlayerRemoved {
-                            player_name: player_name.clone(),
-                        });
-                    }
-                }
-
-                // Check if receiver is still alive
-                if tx.is_closed() {
-                    // Abort all remaining tasks
-                    for (_, handle) in player_tasks {
-                        handle.abort();
-                    }
-                    return;
-                }
-            }
-        });
-
-        UnboundedReceiverStream::new(rx)
-    }
-
-    /// Monitor a single player's events using the MPRIS event API
-    fn monitor_player_events(
-        player: Player,
-        player_name: String,
-        tx: mpsc::UnboundedSender<MediaEvent>,
-    ) {
-        // Get initial state and send initial events
-        if let Ok(mut events) = player.events() {
-            let mut last_track: Option<Track> = None;
-            let mut last_volume: Option<f64> = None;
-
-            // Send initial state
-            if let Ok(metadata) = player.get_metadata() {
-                if metadata.title().is_some() || !metadata.artists().unwrap_or(&[]).is_empty() {
-                    let track = parse_metadata(&metadata);
-                    let _ = tx.send(MediaEvent::TrackChanged {
-                        player_name: player_name.clone(),
-                        track: track.clone(),
-                    });
-                    last_track = Some(track);
-                }
-            }
-
-            if let Ok(status) = player.get_playback_status() {
-                let _ = tx.send(MediaEvent::StateChanged {
-                    player_name: player_name.clone(),
-                    state: parse_playback_status(status),
-                });
-            }
-
-            // Process events as they arrive
-            for event_result in &mut events {
-                match event_result {
-                    Ok(MprisEvent::Playing) => {
-                        let _ = tx.send(MediaEvent::StateChanged {
-                            player_name: player_name.clone(),
-                            state: PlaybackState::Playing,
-                        });
-                    }
-                    Ok(MprisEvent::Paused) => {
-                        let _ = tx.send(MediaEvent::StateChanged {
-                            player_name: player_name.clone(),
-                            state: PlaybackState::Paused,
-                        });
-                    }
-                    Ok(MprisEvent::Stopped) => {
-                        let _ = tx.send(MediaEvent::StateChanged {
-                            player_name: player_name.clone(),
-                            state: PlaybackState::Stopped,
-                        });
-                    }
-                    Ok(MprisEvent::TrackChanged(metadata)) => {
-                        let track = parse_metadata(&metadata);
-                        // Only send if track actually changed
-                        if last_track.as_ref() != Some(&track) {
-                            let _ = tx.send(MediaEvent::TrackChanged {
-                                player_name: player_name.clone(),
-                                track: track.clone(),
-                            });
-                            last_track = Some(track);
-                        }
-                    }
-                    Ok(MprisEvent::VolumeChanged(volume)) => {
-                        // Only send if volume actually changed
-                        if last_volume != Some(volume) {
-                            let _ = tx.send(MediaEvent::VolumeChanged {
-                                player_name: player_name.clone(),
-                                volume,
-                            });
-                            last_volume = Some(volume);
-                        }
-                    }
-                    Ok(MprisEvent::Seeked { position }) => {
-                        let _ = tx.send(MediaEvent::PositionChanged {
-                            player_name: player_name.clone(),
-                            position: Duration::from_micros(position as u64),
-                        });
-                    }
-                    Ok(MprisEvent::PlayerShutDown) => {
-                        // Player shut down, exit the loop
-                        break;
-                    }
-                    // Ignore other events
-                    Ok(_) => {}
-                    Err(_) => {
-                        // Error occurred, stop monitoring this player
-                        break;
-                    }
-                }
-
-                // Check if sender is still alive
-                if tx.is_closed() {
-                    break;
-                }
-            }
-        }
+    /// Creates a new Linux media watcher with a custom provider.
+    /// This is primarily for testing purposes.
+    #[cfg(test)]
+    pub fn with_provider(provider: Arc<dyn PlayerDiscoveryProvider>) -> Self {
+        Self { provider }
     }
 }
 
 #[async_trait]
 impl MediaWatcher for LinuxMediaWatcher {
     async fn list_players(&self) -> Result<Vec<String>> {
-        self.discover_players().await
+        self.provider.discover_players().await
     }
 
     async fn get_player(&self, player_name: &str) -> Result<PlayerInfo> {
-        self.get_player_info(player_name).await
+        self.provider.get_player_info(player_name).await
     }
 
     async fn event_stream(&self) -> Result<EventStream> {
-        let stream = self.create_event_stream_impl();
+        let stream = self.provider.create_event_stream();
         Ok(Box::pin(stream))
     }
 }
@@ -512,6 +538,180 @@ mod tests {
     use super::*;
     use mpris::metadata::Value;
     use std::collections::HashMap;
+
+    /// Mock player discovery provider for testing.
+    struct MockPlayerDiscoveryProvider {
+        players: HashMap<String, PlayerInfo>,
+    }
+
+    impl MockPlayerDiscoveryProvider {
+        fn new() -> Self {
+            Self {
+                players: HashMap::new(),
+            }
+        }
+
+        fn with_player(mut self, player_name: &str, info: PlayerInfo) -> Self {
+            self.players.insert(player_name.to_string(), info);
+            self
+        }
+    }
+
+    #[async_trait]
+    impl PlayerDiscoveryProvider for MockPlayerDiscoveryProvider {
+        async fn discover_players(&self) -> Result<Vec<String>> {
+            Ok(self.players.keys().cloned().collect())
+        }
+
+        async fn get_player_info(&self, player_name: &str) -> Result<PlayerInfo> {
+            self.players
+                .get(player_name)
+                .cloned()
+                .ok_or_else(|| MediaWatcherError::PlayerNotFound(player_name.to_string()))
+        }
+
+        fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send {
+            futures::stream::empty()
+        }
+    }
+
+    fn create_test_player_info(
+        player_name: &str,
+        track: Option<Track>,
+        playback_state: PlaybackState,
+        position: Option<Duration>,
+        volume: Option<f64>,
+    ) -> PlayerInfo {
+        PlayerInfo {
+            player_name: player_name.to_string(),
+            current_track: track,
+            playback_state,
+            position,
+            volume,
+        }
+    }
+
+    fn create_test_track_for_linux(title: &str) -> Track {
+        Track {
+            title: title.to_string(),
+            artist: vec!["Test Artist".to_string()],
+            album: Some("Test Album".to_string()),
+            album_artist: None,
+            track_number: None,
+            duration: Some(Duration::from_secs(180)),
+            art_url: None,
+        }
+    }
+
+    // LinuxMediaWatcher tests with mock provider
+
+    #[tokio::test]
+    async fn test_list_players_with_no_players() {
+        let provider = Arc::new(MockPlayerDiscoveryProvider::new());
+        let watcher = LinuxMediaWatcher::with_provider(provider);
+
+        let players = watcher.list_players().await.unwrap();
+        assert_eq!(players.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_list_players_with_single_player() {
+        let info = create_test_player_info(
+            "spotify",
+            Some(create_test_track_for_linux("Test Song")),
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+            Some(0.8),
+        );
+        let provider = Arc::new(MockPlayerDiscoveryProvider::new().with_player("spotify", info));
+        let watcher = LinuxMediaWatcher::with_provider(provider);
+
+        let players = watcher.list_players().await.unwrap();
+        assert_eq!(players.len(), 1);
+        assert!(players.contains(&"spotify".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_list_players_with_multiple_players() {
+        let spotify_info = create_test_player_info(
+            "spotify",
+            Some(create_test_track_for_linux("Spotify Song")),
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+            Some(0.8),
+        );
+        let vlc_info = create_test_player_info(
+            "vlc",
+            Some(create_test_track_for_linux("VLC Song")),
+            PlaybackState::Paused,
+            Some(Duration::from_secs(30)),
+            Some(0.5),
+        );
+        let provider = Arc::new(
+            MockPlayerDiscoveryProvider::new()
+                .with_player("spotify", spotify_info)
+                .with_player("vlc", vlc_info),
+        );
+        let watcher = LinuxMediaWatcher::with_provider(provider);
+
+        let players = watcher.list_players().await.unwrap();
+        assert_eq!(players.len(), 2);
+        assert!(players.contains(&"spotify".to_string()));
+        assert!(players.contains(&"vlc".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_get_player_with_active_player() {
+        let info = create_test_player_info(
+            "spotify",
+            Some(create_test_track_for_linux("Test Song")),
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+            Some(0.8),
+        );
+        let provider = Arc::new(MockPlayerDiscoveryProvider::new().with_player("spotify", info));
+        let watcher = LinuxMediaWatcher::with_provider(provider);
+
+        let player_info = watcher.get_player("spotify").await.unwrap();
+        assert_eq!(player_info.player_name, "spotify");
+        assert!(player_info.current_track.is_some());
+        assert_eq!(player_info.current_track.unwrap().title, "Test Song");
+        assert_eq!(player_info.playback_state, PlaybackState::Playing);
+        assert_eq!(player_info.position, Some(Duration::from_secs(10)));
+        assert_eq!(player_info.volume, Some(0.8));
+    }
+
+    #[tokio::test]
+    async fn test_get_player_not_found() {
+        let provider = Arc::new(MockPlayerDiscoveryProvider::new());
+        let watcher = LinuxMediaWatcher::with_provider(provider);
+
+        let result = watcher.get_player("nonexistent").await;
+        assert!(result.is_err());
+        if let Err(MediaWatcherError::PlayerNotFound(name)) = result {
+            assert_eq!(name, "nonexistent");
+        } else {
+            panic!("Expected PlayerNotFound error");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_player_paused_state() {
+        let info = create_test_player_info(
+            "vlc",
+            Some(create_test_track_for_linux("Paused Song")),
+            PlaybackState::Paused,
+            Some(Duration::from_secs(45)),
+            Some(0.6),
+        );
+        let provider = Arc::new(MockPlayerDiscoveryProvider::new().with_player("vlc", info));
+        let watcher = LinuxMediaWatcher::with_provider(provider);
+
+        let player_info = watcher.get_player("vlc").await.unwrap();
+        assert_eq!(player_info.player_name, "vlc");
+        assert_eq!(player_info.playback_state, PlaybackState::Paused);
+        assert_eq!(player_info.position, Some(Duration::from_secs(45)));
+    }
 
     // Helper function to create Metadata for testing
     fn create_metadata(values: HashMap<String, Value>) -> Metadata {
