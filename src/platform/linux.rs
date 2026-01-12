@@ -2,15 +2,13 @@
 use crate::error::{MediaWatcherError, Result};
 use crate::types::{MediaEvent, PlaybackState, PlayerInfo, Track};
 use crate::watcher::{EventStream, MediaWatcher};
-use futures::stream::{Stream, StreamExt};
-use mpris::{
-    Event as MprisEvent, Metadata, PlaybackStatus as MprisPlaybackStatus, Player, PlayerFinder,
-};
+use futures::stream::Stream;
+use mpris::{Metadata, PlaybackStatus as MprisPlaybackStatus, Player, PlayerFinder};
 use std::collections::HashMap;
+use std::string::ToString;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{RwLock, mpsc};
-use tokio::time::interval;
+use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 /// Internal trait for abstracting player discovery mechanisms.
@@ -24,35 +22,31 @@ pub trait PlayerDiscoveryProvider: Send + Sync {
         &self,
         player_name: &str,
     ) -> impl std::future::Future<Output = Result<PlayerInfo>> + Send;
-    fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send;
+    fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send + 'static;
 }
 
 /// MPRIS-based provider for Linux.
 ///
 /// This provider uses the MPRIS D-Bus interface to discover and query media players.
 #[doc(hidden)]
-pub struct MprisProvider {
-    finder: PlayerFinder,
-    players: Arc<RwLock<HashMap<String, Player>>>,
-}
+pub struct MprisProvider {}
 
 impl MprisProvider {
     #[doc(hidden)]
     pub fn new() -> Result<Self> {
-        let finder =
-            PlayerFinder::new().map_err(|e| MediaWatcherError::ConnectionError(e.to_string()))?;
+        // Verify that we can create a PlayerFinder (connection is available)
+        PlayerFinder::new().map_err(|e| MediaWatcherError::ConnectionError(e.to_string()))?;
 
-        Ok(Self {
-            finder,
-            players: Arc::new(RwLock::new(HashMap::new())),
-        })
+        Ok(Self {})
     }
 }
 
 impl PlayerDiscoveryProvider for MprisProvider {
     async fn discover_players(&self) -> Result<Vec<String>> {
-        let players = self
-            .finder
+        let finder =
+            PlayerFinder::new().map_err(|e| MediaWatcherError::ConnectionError(e.to_string()))?;
+
+        let players = finder
             .find_all()
             .map_err(|e| MediaWatcherError::ConnectionError(e.to_string()))?;
 
@@ -61,21 +55,20 @@ impl PlayerDiscoveryProvider for MprisProvider {
             .map(|p| extract_player_name(p.bus_name()))
             .collect();
 
-        // Update cache
-        let mut cache = self.players.write().await;
-        cache.clear();
-        for player in players {
-            let name = extract_player_name(player.bus_name());
-            cache.insert(name, player);
-        }
-
         Ok(player_names)
     }
 
     async fn get_player_info(&self, player_name: &str) -> Result<PlayerInfo> {
-        let players = self.players.read().await;
+        let finder =
+            PlayerFinder::new().map_err(|e| MediaWatcherError::ConnectionError(e.to_string()))?;
+
+        let players = finder
+            .find_all()
+            .map_err(|e| MediaWatcherError::ConnectionError(e.to_string()))?;
+
         let player = players
-            .get(player_name)
+            .iter()
+            .find(|p| extract_player_name(p.bus_name()) == player_name)
             .ok_or_else(|| MediaWatcherError::PlayerNotFound(player_name.to_string()))?;
 
         let metadata = player
@@ -86,15 +79,12 @@ impl PlayerDiscoveryProvider for MprisProvider {
             .get_playback_status()
             .map_err(|e| MediaWatcherError::ParseError(e.to_string()))?;
 
-        let position = player
-            .get_position()
-            .ok()
-            .map(|micros| Duration::from_micros(micros as u64));
+        let position = player.get_position().ok();
 
         let volume = player.get_volume().ok();
 
         let current_track =
-            if metadata.title().is_some() || !metadata.artists().unwrap_or(&[]).is_empty() {
+            if metadata.title().is_some() || !metadata.artists().unwrap_or(vec![]).is_empty() {
                 Some(parse_metadata(&metadata))
             } else {
                 None
@@ -109,161 +99,53 @@ impl PlayerDiscoveryProvider for MprisProvider {
         })
     }
 
-    fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send {
-        let finder = self.finder.clone();
+    fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send + 'static {
         let (tx, rx) = mpsc::unbounded_channel();
 
-        tokio::spawn(async move {
-            let mut player_tasks: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
-            let mut discovery_interval = interval(Duration::from_secs(2));
+        // Spawn a dedicated thread for MPRIS event monitoring
+        // We use std::thread because mpris::Player is not Send and cannot be used with tokio::spawn
+        std::thread::spawn(move || {
+            let mut monitor = PlayerMonitor::new();
+            let mut last_check = std::time::Instant::now();
 
             loop {
-                discovery_interval.tick().await;
-
-                let current_players = match finder.find_all() {
-                    Ok(players) => players,
-                    Err(_) => continue,
-                };
-
-                let mut current_player_names = std::collections::HashSet::new();
-
-                for player in current_players {
-                    let player_name = extract_player_name(player.bus_name());
-                    current_player_names.insert(player_name.clone());
-
-                    if !player_tasks.contains_key(&player_name) {
-                        let tx_clone = tx.clone();
-                        let name_clone = player_name.clone();
-
-                        let _ = tx.send(MediaEvent::PlayerAdded {
-                            player_name: player_name.clone(),
-                        });
-
-                        let handle = tokio::task::spawn_blocking(move || {
-                            Self::monitor_player_events(player, name_clone, tx_clone);
-                        });
-
-                        player_tasks.insert(player_name, handle);
-                    }
-                }
-
-                let removed_players: Vec<String> = player_tasks
-                    .keys()
-                    .filter(|name| !current_player_names.contains(*name))
-                    .cloned()
-                    .collect();
-
-                for player_name in removed_players {
-                    if let Some(handle) = player_tasks.remove(&player_name) {
-                        handle.abort();
-                        let _ = tx.send(MediaEvent::PlayerRemoved {
-                            player_name: player_name.clone(),
-                        });
-                    }
-                }
-
+                // Check for channel closure
                 if tx.is_closed() {
-                    for (_, handle) in player_tasks {
-                        handle.abort();
-                    }
-                    return;
+                    break;
                 }
+
+                // Poll for player updates every 500ms
+                if last_check.elapsed() >= Duration::from_millis(500) {
+                    // Create a new finder instance for each iteration
+                    let Ok(finder) = PlayerFinder::new() else {
+                        std::thread::sleep(Duration::from_millis(100));
+                        continue;
+                    };
+
+                    let Ok(current_players) = finder.find_all() else {
+                        std::thread::sleep(Duration::from_millis(100));
+                        continue;
+                    };
+
+                    // Process players and get events
+                    let events = monitor.process_players(current_players);
+
+                    // Send all events
+                    for event in events {
+                        if tx.send(event).is_err() {
+                            return;
+                        }
+                    }
+
+                    last_check = std::time::Instant::now();
+                }
+
+                // Small sleep to avoid busy waiting
+                std::thread::sleep(Duration::from_millis(100));
             }
         });
 
         UnboundedReceiverStream::new(rx)
-    }
-}
-
-impl MprisProvider {
-    fn monitor_player_events(
-        player: Player,
-        player_name: String,
-        tx: mpsc::UnboundedSender<MediaEvent>,
-    ) {
-        if let Ok(mut events) = player.events() {
-            let mut last_track: Option<Track> = None;
-            let mut last_volume: Option<f64> = None;
-
-            // Send initial state
-            if let Ok(metadata) = player.get_metadata() {
-                if metadata.title().is_some() || !metadata.artists().unwrap_or(&[]).is_empty() {
-                    let track = parse_metadata(&metadata);
-                    let _ = tx.send(MediaEvent::TrackChanged {
-                        player_name: player_name.clone(),
-                        track: track.clone(),
-                    });
-                    last_track = Some(track);
-                }
-            }
-
-            if let Ok(status) = player.get_playback_status() {
-                let _ = tx.send(MediaEvent::StateChanged {
-                    player_name: player_name.clone(),
-                    state: parse_playback_status(status),
-                });
-            }
-
-            // Process events as they arrive
-            for event_result in &mut events {
-                match event_result {
-                    Ok(MprisEvent::Playing) => {
-                        let _ = tx.send(MediaEvent::StateChanged {
-                            player_name: player_name.clone(),
-                            state: PlaybackState::Playing,
-                        });
-                    }
-                    Ok(MprisEvent::Paused) => {
-                        let _ = tx.send(MediaEvent::StateChanged {
-                            player_name: player_name.clone(),
-                            state: PlaybackState::Paused,
-                        });
-                    }
-                    Ok(MprisEvent::Stopped) => {
-                        let _ = tx.send(MediaEvent::StateChanged {
-                            player_name: player_name.clone(),
-                            state: PlaybackState::Stopped,
-                        });
-                    }
-                    Ok(MprisEvent::TrackChanged(metadata)) => {
-                        let track = parse_metadata(&metadata);
-                        if last_track.as_ref() != Some(&track) {
-                            let _ = tx.send(MediaEvent::TrackChanged {
-                                player_name: player_name.clone(),
-                                track: track.clone(),
-                            });
-                            last_track = Some(track);
-                        }
-                    }
-                    Ok(MprisEvent::VolumeChanged(volume)) => {
-                        if last_volume != Some(volume) {
-                            let _ = tx.send(MediaEvent::VolumeChanged {
-                                player_name: player_name.clone(),
-                                volume,
-                            });
-                            last_volume = Some(volume);
-                        }
-                    }
-                    Ok(MprisEvent::Seeked { position }) => {
-                        let _ = tx.send(MediaEvent::PositionChanged {
-                            player_name: player_name.clone(),
-                            position: Duration::from_micros(position as u64),
-                        });
-                    }
-                    Ok(MprisEvent::PlayerShutDown) => {
-                        break;
-                    }
-                    Ok(_) => {}
-                    Err(_) => {
-                        break;
-                    }
-                }
-
-                if tx.is_closed() {
-                    break;
-                }
-            }
-        }
     }
 }
 
@@ -297,7 +179,8 @@ impl PlayerMonitor {
         }
     }
 
-    fn known_players(&self) -> &HashMap<String, Player> {
+    #[cfg(test)]
+    const fn known_players(&self) -> &HashMap<String, Player> {
         &self.known_players
     }
 
@@ -308,7 +191,6 @@ impl PlayerMonitor {
         // Process each player and detect changes
         for player in current_players {
             let player_name = extract_player_name(player.bus_name());
-            current_names.insert(player_name.clone(), player.clone());
 
             // Detect new players
             if !self.known_players.contains_key(&player_name) {
@@ -320,8 +202,10 @@ impl PlayerMonitor {
             // Get current state and detect changes
             if let Some(current_state) = Self::get_player_state(&player) {
                 self.detect_state_changes(&player_name, &current_state, &mut events);
-                self.last_states.insert(player_name, current_state);
+                self.last_states.insert(player_name.clone(), current_state);
             }
+
+            current_names.insert(player_name, player);
         }
 
         // Detect removed players
@@ -342,16 +226,14 @@ impl PlayerMonitor {
         let metadata = player.get_metadata().ok()?;
         let playback_status = player.get_playback_status().ok()?;
 
-        let track = if metadata.title().is_some() || !metadata.artists().unwrap_or(&[]).is_empty() {
-            Some(parse_metadata(&metadata))
-        } else {
-            None
-        };
+        let track =
+            if metadata.title().is_some() || !metadata.artists().unwrap_or(vec![]).is_empty() {
+                Some(parse_metadata(&metadata))
+            } else {
+                None
+            };
 
-        let position = player
-            .get_position()
-            .ok()
-            .map(|micros| Duration::from_micros(micros as u64));
+        let position = player.get_position().ok();
 
         let volume = player.get_volume().ok();
 
@@ -373,11 +255,11 @@ impl PlayerMonitor {
             Some(last) => {
                 // Check for track changes
                 if current.track != last.track
-                    && let Some(current_track) = current.track
+                    && let Some(current_track) = &current.track
                 {
                     events.push(MediaEvent::TrackChanged {
                         player_name: player_name.to_string(),
-                        track: current_track,
+                        track: current_track.clone(),
                     });
                 }
 
@@ -425,13 +307,8 @@ impl PlayerMonitor {
         events: &mut Vec<MediaEvent>,
     ) {
         if let (Some(pos), Some(last_pos)) = (current.position, last.position) {
-            let diff = if pos > last_pos {
-                pos - last_pos
-            } else {
-                last_pos - pos
-            };
-
             // If difference is more than 2 seconds, it's probably a seek
+            let diff = pos.abs_diff(last_pos);
             if diff > Duration::from_secs(2) {
                 events.push(MediaEvent::PositionChanged {
                     player_name: player_name.to_string(),
@@ -456,7 +333,7 @@ impl LinuxMediaWatcher<MprisProvider> {
 
 impl<P: PlayerDiscoveryProvider + 'static> LinuxMediaWatcher<P> {
     #[cfg(test)]
-    pub fn with_provider(provider: Arc<P>) -> Self {
+    pub const fn with_provider(provider: Arc<P>) -> Self {
         Self { provider }
     }
 }
@@ -470,7 +347,7 @@ impl<P: PlayerDiscoveryProvider + 'static> MediaWatcher for LinuxMediaWatcher<P>
         self.provider.get_player_info(player_name).await
     }
 
-    async fn event_stream(&self) -> Result<EventStream> {
+    async fn event_stream(&self) -> Result<EventStream<'static>> {
         let stream = self.provider.create_event_stream();
         Ok(Box::pin(stream))
     }
@@ -485,32 +362,30 @@ fn extract_player_name(bus_name: &str) -> String {
         .to_string()
 }
 
+#[allow(clippy::cast_sign_loss)]
 fn parse_metadata(metadata: &Metadata) -> Track {
     let title = metadata
         .title()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "Unknown".to_string());
+        .map_or_else(|| "Unknown".to_string(), ToString::to_string);
 
     let artist = metadata
         .artists()
-        .unwrap_or(&[])
+        .unwrap_or_default()
         .iter()
-        .map(|s| s.to_string())
+        .map(ToString::to_string)
         .collect();
 
-    let album = metadata.album_name().map(|s| s.to_string());
+    let album = metadata.album_name().map(ToString::to_string);
 
     let album_artist = metadata
         .album_artists()
-        .map(|artists| artists.iter().map(|s| s.to_string()).collect());
+        .map(|artists| artists.iter().map(ToString::to_string).collect());
 
-    let track_number = metadata.track_number();
+    let track_number = metadata.track_number().map(|number| number as u32);
 
-    let duration = metadata
-        .length()
-        .map(|micros| Duration::from_micros(micros as u64));
+    let duration = metadata.length();
 
-    let art_url = metadata.art_url().map(|s| s.to_string());
+    let art_url = metadata.art_url().map(ToString::to_string);
 
     Track {
         title,
@@ -523,7 +398,7 @@ fn parse_metadata(metadata: &Metadata) -> Track {
     }
 }
 
-fn parse_playback_status(status: MprisPlaybackStatus) -> PlaybackState {
+const fn parse_playback_status(status: MprisPlaybackStatus) -> PlaybackState {
     match status {
         MprisPlaybackStatus::Playing => PlaybackState::Playing,
         MprisPlaybackStatus::Paused => PlaybackState::Paused,
@@ -534,7 +409,7 @@ fn parse_playback_status(status: MprisPlaybackStatus) -> PlaybackState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mpris::metadata::Value;
+    use mpris::MetadataValue;
     use std::collections::HashMap;
 
     /// Mock player discovery provider for testing.
@@ -567,7 +442,7 @@ mod tests {
                 .ok_or_else(|| MediaWatcherError::PlayerNotFound(player_name.to_string()))
         }
 
-        fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send {
+        fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send + 'static {
             futures::stream::empty()
         }
     }
@@ -654,7 +529,8 @@ mod tests {
         );
         let watcher = LinuxMediaWatcher::with_provider(provider);
 
-        let players = watcher.list_players().await?;
+        let mut players = watcher.list_players().await?;
+        players.sort();
         assert_eq!(players, vec!["spotify".to_string(), "vlc".to_string()]);
 
         Ok(())
@@ -696,7 +572,7 @@ mod tests {
         let result = watcher.get_player("nonexistent").await;
         assert_eq!(
             result,
-            Err(MediaWatcherError::PlayerNotFound("nonexistent"))
+            Err(MediaWatcherError::PlayerNotFound("nonexistent".to_string()))
         );
     }
 
@@ -729,7 +605,7 @@ mod tests {
     }
 
     // Helper function to create Metadata for testing
-    fn create_metadata(values: HashMap<String, Value>) -> Metadata {
+    fn create_metadata(values: HashMap<String, MetadataValue>) -> Metadata {
         Metadata::from(values)
     }
 
@@ -766,25 +642,25 @@ mod tests {
         let mut values = HashMap::new();
         values.insert(
             "xesam:title".to_string(),
-            Value::String("Test Song".to_string()),
+            MetadataValue::String("Test Song".to_string()),
         );
         values.insert(
             "xesam:artist".to_string(),
-            Value::Array(vec![Value::String("Test Artist".to_string())]),
+            MetadataValue::Array(vec![MetadataValue::String("Test Artist".to_string())]),
         );
         values.insert(
             "xesam:album".to_string(),
-            Value::String("Test Album".to_string()),
+            MetadataValue::String("Test Album".to_string()),
         );
         values.insert(
             "xesam:albumArtist".to_string(),
-            Value::Array(vec![Value::String("Album Artist".to_string())]),
+            MetadataValue::Array(vec![MetadataValue::String("Album Artist".to_string())]),
         );
-        values.insert("xesam:trackNumber".to_string(), Value::I32(5));
-        values.insert("mpris:length".to_string(), Value::I64(180_000_000)); // microseconds
+        values.insert("xesam:trackNumber".to_string(), MetadataValue::I32(5));
+        values.insert("mpris:length".to_string(), MetadataValue::I64(180_000_000)); // microseconds
         values.insert(
             "mpris:artUrl".to_string(),
-            Value::String("file:///path/to/art.jpg".to_string()),
+            MetadataValue::String("file:///path/to/art.jpg".to_string()),
         );
 
         let metadata = create_metadata(values);
@@ -809,14 +685,14 @@ mod tests {
         let mut values = HashMap::new();
         values.insert(
             "xesam:title".to_string(),
-            Value::String("Collaboration Song".to_string()),
+            MetadataValue::String("Collaboration Song".to_string()),
         );
         values.insert(
             "xesam:artist".to_string(),
-            Value::Array(vec![
-                Value::String("Artist 1".to_string()),
-                Value::String("Artist 2".to_string()),
-                Value::String("Artist 3".to_string()),
+            MetadataValue::Array(vec![
+                MetadataValue::String("Artist 1".to_string()),
+                MetadataValue::String("Artist 2".to_string()),
+                MetadataValue::String("Artist 3".to_string()),
             ]),
         );
 
@@ -846,7 +722,7 @@ mod tests {
         let mut values = HashMap::new();
         values.insert(
             "xesam:title".to_string(),
-            Value::String("Minimal Song".to_string()),
+            MetadataValue::String("Minimal Song".to_string()),
         );
 
         let metadata = create_metadata(values);
@@ -871,7 +747,7 @@ mod tests {
         let mut values = HashMap::new();
         values.insert(
             "xesam:artist".to_string(),
-            Value::Array(vec![Value::String("Artist Only".to_string())]),
+            MetadataValue::Array(vec![MetadataValue::String("Artist Only".to_string())]),
         );
 
         let metadata = create_metadata(values);
@@ -916,15 +792,15 @@ mod tests {
         let mut values = HashMap::new();
         values.insert(
             "xesam:title".to_string(),
-            Value::String("テスト曲".to_string()),
+            MetadataValue::String("テスト曲".to_string()),
         );
         values.insert(
             "xesam:artist".to_string(),
-            Value::Array(vec![Value::String("アーティスト名".to_string())]),
+            MetadataValue::Array(vec![MetadataValue::String("アーティスト名".to_string())]),
         );
         values.insert(
             "xesam:album".to_string(),
-            Value::String("アルバム🎵".to_string()),
+            MetadataValue::String("アルバム🎵".to_string()),
         );
 
         let metadata = create_metadata(values);
@@ -949,15 +825,17 @@ mod tests {
         let mut values = HashMap::new();
         values.insert(
             "xesam:title".to_string(),
-            Value::String("Song: The \"Best\" & Greatest (2024)".to_string()),
+            MetadataValue::String("Song: The \"Best\" & Greatest (2024)".to_string()),
         );
         values.insert(
             "xesam:artist".to_string(),
-            Value::Array(vec![Value::String("Artist's Name / Band".to_string())]),
+            MetadataValue::Array(vec![MetadataValue::String(
+                "Artist's Name / Band".to_string(),
+            )]),
         );
         values.insert(
             "xesam:album".to_string(),
-            Value::String("Album <Special Edition>".to_string()),
+            MetadataValue::String("Album <Special Edition>".to_string()),
         );
 
         let metadata = create_metadata(values);
@@ -982,21 +860,21 @@ mod tests {
         let mut values = HashMap::new();
         values.insert(
             "xesam:title".to_string(),
-            Value::String("Compilation Track".to_string()),
+            MetadataValue::String("Compilation Track".to_string()),
         );
         values.insert(
             "xesam:artist".to_string(),
-            Value::Array(vec![Value::String("Track Artist".to_string())]),
+            MetadataValue::Array(vec![MetadataValue::String("Track Artist".to_string())]),
         );
         values.insert(
             "xesam:album".to_string(),
-            Value::String("Various Artists".to_string()),
+            MetadataValue::String("Various Artists".to_string()),
         );
         values.insert(
             "xesam:albumArtist".to_string(),
-            Value::Array(vec![
-                Value::String("Artist A".to_string()),
-                Value::String("Artist B".to_string()),
+            MetadataValue::Array(vec![
+                MetadataValue::String("Artist A".to_string()),
+                MetadataValue::String("Artist B".to_string()),
             ]),
         );
 
@@ -1007,9 +885,9 @@ mod tests {
             track,
             Track {
                 title: "Compilation Track".to_string(),
-                artist: vec!["Artist A".to_string(), "Artist B".to_string()],
+                artist: vec!["Track Artist".to_string()],
                 album: Some("Various Artists".to_string()),
-                album_artist: None,
+                album_artist: Some(vec!["Artist A".to_string(), "Artist B".to_string()]),
                 track_number: None,
                 duration: None,
                 art_url: None,
@@ -1149,10 +1027,16 @@ mod tests {
 
         assert_eq!(
             events,
-            vec![MediaEvent::TrackChanged {
-                player_name: "spotify".to_string(),
-                track: track2
-            }]
+            vec![
+                MediaEvent::TrackChanged {
+                    player_name: "spotify".to_string(),
+                    track: track2
+                },
+                MediaEvent::PositionChanged {
+                    player_name: "spotify".to_string(),
+                    position: Duration::from_secs(5)
+                }
+            ]
         );
     }
 
@@ -1221,7 +1105,7 @@ mod tests {
             events,
             vec![MediaEvent::VolumeChanged {
                 player_name: "spotify".to_string(),
-                state: *volume == 0.5
+                volume: 0.5
             }]
         );
     }
@@ -1385,9 +1269,9 @@ mod tests {
         let mut events = Vec::new();
 
         // Initial state
-        let track = create_test_track("Song 1");
+        let track1 = create_test_track("Song 1");
         let initial_state = create_test_state(
-            Some(track.clone()),
+            Some(track1),
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             Some(0.8),
@@ -1397,8 +1281,9 @@ mod tests {
             .insert("spotify".to_string(), initial_state);
 
         // New state with multiple changes
+        let track2 = create_test_track("Song 2");
         let new_state = create_test_state(
-            Some(create_test_track("Song 2")),
+            Some(track2.clone()),
             PlaybackState::Paused,
             Some(Duration::from_secs(70)), // Significant position change
             Some(0.5),
@@ -1412,7 +1297,7 @@ mod tests {
             vec![
                 MediaEvent::TrackChanged {
                     player_name: "spotify".to_string(),
-                    track: track.clone(),
+                    track: track2,
                 },
                 MediaEvent::StateChanged {
                     player_name: "spotify".to_string(),
@@ -1420,7 +1305,7 @@ mod tests {
                 },
                 MediaEvent::PositionChanged {
                     player_name: "spotify".to_string(),
-                    position: Duration::from_micros(70),
+                    position: Duration::from_secs(70),
                 },
                 MediaEvent::VolumeChanged {
                     player_name: "spotify".to_string(),
