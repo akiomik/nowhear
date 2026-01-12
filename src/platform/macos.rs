@@ -230,14 +230,13 @@ impl PlayerMonitor {
         }
 
         // Check for position change (seek detection)
+
         if let Some(current_pos) = current.position {
-            let should_emit = if let Some(last_pos) = last.position {
+            let should_emit = last.position.is_none_or(|last_pos| {
                 // Detect seek: position difference > 2 seconds
                 let diff = current_pos.abs_diff(last_pos);
                 diff > Duration::from_secs(2)
-            } else {
-                true // First position
-            };
+            });
 
             if should_emit {
                 events.push(MediaEvent::PositionChanged {
