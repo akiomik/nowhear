@@ -13,7 +13,11 @@ use tokio::sync::{RwLock, mpsc};
 use tokio::time::interval;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-// Internal trait for abstracting player discovery mechanisms
+/// Internal trait for abstracting player discovery mechanisms.
+///
+/// This trait is used internally by the Linux implementation to allow
+/// for dependency injection in tests. It is not part of the public API.
+#[doc(hidden)]
 pub trait PlayerDiscoveryProvider: Send + Sync {
     fn discover_players(&self) -> impl std::future::Future<Output = Result<Vec<String>>> + Send;
     fn get_player_info(
@@ -23,13 +27,17 @@ pub trait PlayerDiscoveryProvider: Send + Sync {
     fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send;
 }
 
-// MPRIS-based provider for Linux
+/// MPRIS-based provider for Linux.
+///
+/// This provider uses the MPRIS D-Bus interface to discover and query media players.
+#[doc(hidden)]
 pub struct MprisProvider {
     finder: PlayerFinder,
     players: Arc<RwLock<HashMap<String, Player>>>,
 }
 
 impl MprisProvider {
+    #[doc(hidden)]
     pub fn new() -> Result<Self> {
         let finder =
             PlayerFinder::new().map_err(|e| MediaWatcherError::ConnectionError(e.to_string()))?;
@@ -260,6 +268,9 @@ impl MprisProvider {
 }
 
 /// Linux media watcher implementation using MPRIS D-Bus interface.
+///
+/// Note: This type is visible for technical reasons but should not be used directly.
+/// Use `MediaWatcherBuilder` to create media watchers.
 pub struct LinuxMediaWatcher<P: PlayerDiscoveryProvider = MprisProvider> {
     provider: Arc<P>,
 }
@@ -270,7 +281,8 @@ struct PlayerMonitor {
 }
 
 #[derive(Clone, Debug)]
-struct PlayerState {
+#[doc(hidden)]
+pub struct PlayerState {
     track: Option<Track>,
     playback_state: PlaybackState,
     position: Option<Duration>,
@@ -428,6 +440,9 @@ impl PlayerMonitor {
 
 impl LinuxMediaWatcher<MprisProvider> {
     /// Creates a new Linux media watcher.
+    ///
+    /// Note: This is an internal API. Use `MediaWatcherBuilder` instead.
+    #[doc(hidden)]
     pub async fn new() -> Result<Self> {
         Ok(Self {
             provider: Arc::new(MprisProvider::new()?),

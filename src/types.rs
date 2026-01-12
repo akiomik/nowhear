@@ -50,17 +50,6 @@ pub enum PlaybackState {
     Stopped,
 }
 
-/// Internal player state representation.
-///
-/// This is used internally by platform implementations and is not part of the public API.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct PlayerState {
-    pub(crate) track: Track,
-    pub(crate) playback_state: PlaybackState,
-    pub(crate) position: Option<Duration>,
-    pub(crate) volume: Option<f64>,
-}
-
 /// Complete information about a media player's current state.
 ///
 /// This structure contains the player name, current track information,

@@ -2,7 +2,7 @@
 
 #[cfg(target_os = "macos")]
 use crate::error::{MediaWatcherError, Result};
-use crate::types::{MediaEvent, PlaybackState, PlayerInfo, PlayerState, Track};
+use crate::types::{MediaEvent, PlaybackState, PlayerInfo, Track};
 use crate::watcher::{EventStream, MediaWatcher};
 use futures::stream::Stream;
 use std::sync::Arc;
@@ -12,7 +12,24 @@ use tokio::sync::mpsc;
 use tokio::time;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-// Internal trait for abstracting player state retrieval
+/// Internal player state representation for macOS implementation.
+///
+/// This structure is used internally to track player state changes and
+/// is not part of the public API.
+#[derive(Debug, Clone, PartialEq)]
+#[doc(hidden)]
+pub struct PlayerState {
+    pub(crate) track: Track,
+    pub(crate) playback_state: PlaybackState,
+    pub(crate) position: Option<Duration>,
+    pub(crate) volume: Option<f64>,
+}
+
+/// Internal trait for abstracting player state retrieval.
+///
+/// This trait is used internally by the macOS implementation to allow
+/// for dependency injection in tests. It is not part of the public API.
+#[doc(hidden)]
 pub trait PlayerStateProvider: Send + Sync {
     fn get_player_state(
         &self,
@@ -23,7 +40,11 @@ pub trait PlayerStateProvider: Send + Sync {
     ) -> impl std::future::Future<Output = Result<Vec<String>>> + Send;
 }
 
-// AppleScript-based provider for macOS
+/// AppleScript-based provider for macOS.
+///
+/// This provider uses AppleScript to query Music.app and Spotify for their
+/// current playback state.
+#[doc(hidden)]
 pub struct AppleScriptProvider;
 
 impl PlayerStateProvider for AppleScriptProvider {
@@ -112,6 +133,9 @@ impl AppleScriptProvider {
 /// `NSDistributedNotificationCenter`, which would require running on the main thread.
 /// The AppleScript approach with periodic polling offers a simpler alternative that
 /// works well in async contexts.
+///
+/// Note: This type is visible for technical reasons but should not be used directly.
+/// Use `MediaWatcherBuilder` to create media watchers.
 pub struct MacOSMediaWatcher<P: PlayerStateProvider = AppleScriptProvider> {
     provider: Arc<P>,
 }
@@ -237,6 +261,9 @@ impl PlayerMonitor {
 
 impl MacOSMediaWatcher<AppleScriptProvider> {
     /// Creates a new macOS media watcher.
+    ///
+    /// Note: This is an internal API. Use `MediaWatcherBuilder` instead.
+    #[doc(hidden)]
     pub async fn new() -> Result<Self> {
         Ok(Self {
             provider: Arc::new(AppleScriptProvider),

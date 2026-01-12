@@ -2,7 +2,7 @@
 
 #[cfg(target_os = "windows")]
 use crate::error::{MediaWatcherError, Result};
-use crate::types::{MediaEvent, PlaybackState, PlayerInfo, PlayerState, Track};
+use crate::types::{MediaEvent, PlaybackState, PlayerInfo, Track};
 use crate::watcher::{EventStream, MediaWatcher};
 use futures::stream::Stream;
 use std::collections::HashMap;
@@ -17,7 +17,24 @@ use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as WinPlaybackStatus,
 };
 
-// Internal trait for abstracting media session access
+/// Internal player state representation for Windows implementation.
+///
+/// This structure is used internally to track player state changes and
+/// is not part of the public API.
+#[derive(Debug, Clone, PartialEq)]
+#[doc(hidden)]
+pub struct PlayerState {
+    pub(crate) track: Track,
+    pub(crate) playback_state: PlaybackState,
+    pub(crate) position: Option<Duration>,
+    pub(crate) volume: Option<f64>,
+}
+
+/// Internal trait for abstracting media session access.
+///
+/// This trait is used internally by the Windows implementation to allow
+/// for dependency injection in tests. It is not part of the public API.
+#[doc(hidden)]
 pub trait MediaSessionProvider: Send + Sync {
     fn get_all_sessions(
         &self,
@@ -29,12 +46,16 @@ pub trait MediaSessionProvider: Send + Sync {
     fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send;
 }
 
-// Windows Media Control provider
+/// Windows Media Control provider.
+///
+/// This provider uses the Windows Media Control API to query media sessions.
+#[doc(hidden)]
 pub struct WindowsMediaControlProvider {
     manager: SessionManager,
 }
 
 impl WindowsMediaControlProvider {
+    #[doc(hidden)]
     pub async fn new() -> Result<Self> {
         let manager = SessionManager::RequestAsync()
             .map_err(|e| {
@@ -231,6 +252,9 @@ impl MediaSessionProvider for WindowsMediaControlProvider {
 }
 
 /// Windows media watcher implementation using Windows Media Control API.
+///
+/// Note: This type is visible for technical reasons but should not be used directly.
+/// Use `MediaWatcherBuilder` to create media watchers.
 pub struct WindowsMediaWatcher<P: MediaSessionProvider = WindowsMediaControlProvider> {
     provider: Arc<P>,
 }
@@ -349,6 +373,9 @@ impl PlayerMonitor {
 
 impl WindowsMediaWatcher<WindowsMediaControlProvider> {
     /// Creates a new Windows media watcher.
+    ///
+    /// Note: This is an internal API. Use `MediaWatcherBuilder` instead.
+    #[doc(hidden)]
     pub async fn new() -> Result<Self> {
         Ok(Self {
             provider: Arc::new(WindowsMediaControlProvider::new().await?),
