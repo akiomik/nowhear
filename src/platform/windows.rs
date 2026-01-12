@@ -189,11 +189,7 @@ impl WindowsMediaWatcher {
             MediaWatcherError::ConnectionError(format!("Failed to get sessions: {}", e))
         })?;
 
-        let mut result = Vec::new();
-        for session in sessions {
-            result.push(session);
-        }
-        Ok(result)
+        Ok(sessions.into_iter().collect())
     }
 
     /// Extract the source app user model ID from a session.
