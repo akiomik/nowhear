@@ -159,13 +159,15 @@ pub struct Track {
 
 ## Examples
 
-Run the included example:
+Run the included examples:
 
 ```bash
+# Basic usage - list players and get current playback info
+cargo run --example basic
+
+# Stream events - monitor media events in real-time
 cargo run --example stream
 ```
-
-This will start monitoring for media events and print them to the console.
 
 ## Platform-Specific Notes
 
