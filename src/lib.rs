@@ -9,7 +9,7 @@
 //!
 //! - **Linux**: Uses MPRIS D-Bus interface
 //! - **macOS**: Uses AppleScript to query Music.app and Spotify
-//! - **Windows**: Uses Windows Media Control API (GlobalSystemMediaTransportControlsSessionManager)
+//! - **Windows**: Uses Windows Media Control API (`GlobalSystemMediaTransportControlsSessionManager`)
 //!
 //! ## Basic Usage
 //!
