@@ -272,7 +272,7 @@ impl MacOSMediaWatcher<AppleScriptProvider> {
 
 impl<P: PlayerStateProvider + 'static> MacOSMediaWatcher<P> {
     #[cfg(test)]
-    pub fn with_provider(provider: Arc<P>) -> Self {
+    pub const fn with_provider(provider: Arc<P>) -> Self {
         Self { provider }
     }
 
