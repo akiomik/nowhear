@@ -6,6 +6,7 @@ rust-version = "1.88.0"
 authors = ["Akiomi Kamakura <akiomik@gmail.com>"]
 description = "Cross-platform media playback information watcher"
 repository = "https://github.com/akiomik/nowhear"
+readme = "README.md"
 license = "Apache-2.0"
 keywords = ["media", "music", "playback", "mpris", "nowplaying"]
 categories = ["multimedia", "os"]
