@@ -12,7 +12,7 @@ use futures::stream::Stream;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::mpsc;
 use tokio::time::{interval, sleep};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use windows::Media::Control::{
@@ -21,13 +21,237 @@ use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as WinPlaybackStatus,
 };
 
+/// Trait for discovering and querying media sessions on the system.
+///
+/// This trait abstracts the mechanism for finding and interacting with
+/// media sessions, allowing for dependency injection and easier testing.
+#[async_trait]
+pub trait MediaSessionProvider: Send + Sync {
+    /// Get all current media sessions.
+    async fn get_all_sessions(&self) -> Result<HashMap<String, PlayerState>>;
+
+    /// Get information about a specific session.
+    async fn get_session_info(&self, session_id: &str) -> Result<PlayerInfo>;
+
+    /// Create an event stream that monitors all available sessions.
+    fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send;
+}
+
+/// Windows Media Control API-based session provider.
+///
+/// This provider uses the Windows GlobalSystemMediaTransportControlsSessionManager
+/// to discover and interact with media players on Windows systems.
+pub struct WindowsMediaControlProvider {
+    manager: SessionManager,
+}
+
+impl WindowsMediaControlProvider {
+    /// Creates a new Windows Media Control provider.
+    pub async fn new() -> Result<Self> {
+        let manager = SessionManager::RequestAsync()
+            .map_err(|e| {
+                MediaWatcherError::ConnectionError(format!("Failed to get session manager: {}", e))
+            })?
+            .await
+            .map_err(|e| {
+                MediaWatcherError::ConnectionError(format!(
+                    "Failed to await session manager: {}",
+                    e
+                ))
+            })?;
+
+        Ok(Self { manager })
+    }
+
+    /// Get all current media sessions as WinSession objects.
+    async fn get_sessions(&self) -> Result<Vec<WinSession>> {
+        let sessions = self.manager.GetSessions().map_err(|e| {
+            MediaWatcherError::ConnectionError(format!("Failed to get sessions: {}", e))
+        })?;
+
+        Ok(sessions.into_iter().collect())
+    }
+
+    /// Extract the source app user model ID from a session.
+    fn get_session_id(session: &WinSession) -> Result<String> {
+        let app_id = session
+            .SourceAppUserModelId()
+            .map_err(|e| MediaWatcherError::ParseError(format!("Failed to get app ID: {}", e)))?;
+
+        Ok(app_id.to_string())
+    }
+
+    /// Get the current state of a session.
+    async fn get_session_state(session: &WinSession) -> Result<PlayerState> {
+        let media_props = session
+            .TryGetMediaPropertiesAsync()
+            .map_err(|e| {
+                MediaWatcherError::ParseError(format!("Failed to get media properties: {}", e))
+            })?
+            .await
+            .map_err(|e| {
+                MediaWatcherError::ParseError(format!("Failed to await media properties: {}", e))
+            })?;
+
+        let playback_info = session.GetPlaybackInfo().map_err(|e| {
+            MediaWatcherError::ParseError(format!("Failed to get playback info: {}", e))
+        })?;
+
+        let playback_status = playback_info.PlaybackStatus().map_err(|e| {
+            MediaWatcherError::ParseError(format!("Failed to get playback status: {}", e))
+        })?;
+
+        let timeline = session
+            .GetTimelineProperties()
+            .map_err(|e| MediaWatcherError::ParseError(format!("Failed to get timeline: {}", e)))?;
+
+        let title = media_props.Title().unwrap_or_default().to_string();
+
+        let artist_hstring = media_props.Artist().unwrap_or_default();
+        let artist = if artist_hstring.is_empty() {
+            vec![]
+        } else {
+            vec![artist_hstring.to_string()]
+        };
+
+        let album_title = media_props.AlbumTitle().ok();
+        let album = album_title.map(|s| s.to_string()).filter(|s| !s.is_empty());
+
+        let track_number = media_props.TrackNumber().ok();
+
+        let art_url = media_props
+            .Thumbnail()
+            .ok()
+            .and_then(|thumb| thumb.ToString().ok())
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty());
+
+        let position_ticks = timeline.Position().ok();
+        let position =
+            position_ticks.map(|ticks| Duration::from_nanos((ticks.Duration as u64) * 100));
+
+        let end_time_ticks = timeline.EndTime().ok();
+        let duration =
+            end_time_ticks.map(|ticks| Duration::from_nanos((ticks.Duration as u64) * 100));
+
+        let track = Track {
+            title: if title.is_empty() {
+                "Unknown".to_string()
+            } else {
+                title
+            },
+            artist,
+            album,
+            album_artist: None,
+            track_number,
+            duration,
+            art_url,
+        };
+
+        Ok(PlayerState {
+            track,
+            playback_state: parse_playback_status(playback_status),
+            position,
+            volume: None,
+        })
+    }
+}
+
+#[async_trait]
+impl MediaSessionProvider for WindowsMediaControlProvider {
+    async fn get_all_sessions(&self) -> Result<HashMap<String, PlayerState>> {
+        let sessions = self.get_sessions().await?;
+        let mut session_states = HashMap::new();
+
+        for session in sessions {
+            if let Ok(session_id) = Self::get_session_id(&session) {
+                if let Ok(state) = Self::get_session_state(&session).await {
+                    session_states.insert(session_id, state);
+                }
+            }
+        }
+
+        Ok(session_states)
+    }
+
+    async fn get_session_info(&self, session_id: &str) -> Result<PlayerInfo> {
+        let sessions = self.get_sessions().await?;
+
+        for session in sessions {
+            let id = Self::get_session_id(&session)?;
+            if id == session_id {
+                let state = Self::get_session_state(&session).await?;
+                return Ok(PlayerInfo {
+                    player_name: session_id.to_string(),
+                    current_track: Some(state.track),
+                    playback_state: state.playback_state,
+                    position: state.position,
+                    volume: state.volume,
+                });
+            }
+        }
+
+        Err(MediaWatcherError::PlayerNotFound(session_id.to_string()))
+    }
+
+    fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send {
+        let manager = self.manager.clone();
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        tokio::spawn(async move {
+            let mut monitor = PlayerMonitor::new();
+            let mut poll_interval = interval(Duration::from_millis(1000));
+
+            loop {
+                poll_interval.tick().await;
+
+                let sessions = match manager.GetSessions() {
+                    Ok(sessions) => sessions,
+                    Err(_) => {
+                        sleep(Duration::from_secs(1)).await;
+                        continue;
+                    }
+                };
+
+                let mut current_states = HashMap::new();
+                let mut futures = Vec::new();
+                let mut session_ids = Vec::new();
+
+                for session in sessions {
+                    if let Ok(session_id) = WindowsMediaControlProvider::get_session_id(&session) {
+                        session_ids.push(session_id);
+                        futures.push(WindowsMediaControlProvider::get_session_state(&session));
+                    }
+                }
+
+                let results = futures::future::join_all(futures).await;
+
+                for (session_id, result) in session_ids.into_iter().zip(results) {
+                    if let Ok(state) = result {
+                        current_states.insert(session_id, state);
+                    }
+                }
+
+                let events = monitor.process_sessions(current_states);
+
+                for event in events {
+                    if tx.send(event).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+
+        UnboundedReceiverStream::new(rx)
+    }
+}
+
 /// Media watcher implementation for Windows.
 ///
-/// This watcher monitors media players on Windows by using the Windows Media Control API.
-/// It supports any media player that integrates with the System Media Transport Controls.
+/// This watcher monitors media players on Windows by using a pluggable
+/// MediaSessionProvider to query the current playback state.
 pub struct WindowsMediaWatcher {
-    manager: SessionManager,
-    sessions: Arc<RwLock<HashMap<String, WinSession>>>,
+    provider: Arc<dyn MediaSessionProvider>,
 }
 
 /// Monitors player state changes and generates events for Windows players.
@@ -158,235 +382,34 @@ impl PlayerMonitor {
 }
 
 impl WindowsMediaWatcher {
-    /// Creates a new Windows media watcher.
-    ///
-    /// # Returns
-    ///
-    /// Returns a `Result` containing the newly created watcher instance.
+    /// Creates a new Windows media watcher with the default Windows Media Control provider.
     pub async fn new() -> Result<Self> {
-        // Request access to the session manager
-        let manager = SessionManager::RequestAsync()
-            .map_err(|e| {
-                MediaWatcherError::ConnectionError(format!("Failed to get session manager: {}", e))
-            })?
-            .await
-            .map_err(|e| {
-                MediaWatcherError::ConnectionError(format!(
-                    "Failed to await session manager: {}",
-                    e
-                ))
-            })?;
-
         Ok(Self {
-            manager,
-            sessions: Arc::new(RwLock::new(HashMap::new())),
+            provider: Arc::new(WindowsMediaControlProvider::new().await?),
         })
     }
 
-    /// Get all current media sessions.
-    async fn get_all_sessions(&self) -> Result<Vec<WinSession>> {
-        let sessions = self.manager.GetSessions().map_err(|e| {
-            MediaWatcherError::ConnectionError(format!("Failed to get sessions: {}", e))
-        })?;
-
-        Ok(sessions.into_iter().collect())
-    }
-
-    /// Extract the source app user model ID from a session.
-    fn get_session_id(session: &WinSession) -> Result<String> {
-        let app_id = session
-            .SourceAppUserModelId()
-            .map_err(|e| MediaWatcherError::ParseError(format!("Failed to get app ID: {}", e)))?;
-
-        Ok(app_id.to_string())
-    }
-
-    /// Get the current state of a session.
-    async fn get_session_state(session: &WinSession) -> Result<PlayerState> {
-        // Get media properties
-        let media_props = session
-            .TryGetMediaPropertiesAsync()
-            .map_err(|e| {
-                MediaWatcherError::ParseError(format!("Failed to get media properties: {}", e))
-            })?
-            .await
-            .map_err(|e| {
-                MediaWatcherError::ParseError(format!("Failed to await media properties: {}", e))
-            })?;
-
-        // Get playback info
-        let playback_info = session.GetPlaybackInfo().map_err(|e| {
-            MediaWatcherError::ParseError(format!("Failed to get playback info: {}", e))
-        })?;
-
-        let playback_status = playback_info.PlaybackStatus().map_err(|e| {
-            MediaWatcherError::ParseError(format!("Failed to get playback status: {}", e))
-        })?;
-
-        // Get timeline properties for position
-        let timeline = session
-            .GetTimelineProperties()
-            .map_err(|e| MediaWatcherError::ParseError(format!("Failed to get timeline: {}", e)))?;
-
-        // Extract track information
-        let title = media_props.Title().unwrap_or_default().to_string();
-
-        let artist_hstring = media_props.Artist().unwrap_or_default();
-        let artist = if artist_hstring.is_empty() {
-            vec![]
-        } else {
-            vec![artist_hstring.to_string()]
-        };
-
-        let album_title = media_props.AlbumTitle().ok();
-        let album = album_title.map(|s| s.to_string()).filter(|s| !s.is_empty());
-
-        let track_number = media_props.TrackNumber().ok();
-
-        // Get thumbnail URL if available
-        let art_url = media_props
-            .Thumbnail()
-            .ok()
-            .and_then(|thumb| thumb.ToString().ok())
-            .map(|s| s.to_string())
-            .filter(|s| !s.is_empty());
-
-        // Parse position and duration
-        let position_ticks = timeline.Position().ok();
-        let position =
-            position_ticks.map(|ticks| Duration::from_nanos((ticks.Duration as u64) * 100));
-
-        let end_time_ticks = timeline.EndTime().ok();
-        let duration =
-            end_time_ticks.map(|ticks| Duration::from_nanos((ticks.Duration as u64) * 100));
-
-        let track = Track {
-            title: if title.is_empty() {
-                "Unknown".to_string()
-            } else {
-                title
-            },
-            artist,
-            album,
-            album_artist: None,
-            track_number,
-            duration,
-            art_url,
-        };
-
-        Ok(PlayerState {
-            track,
-            playback_state: parse_playback_status(playback_status),
-            position,
-            volume: None, // Windows Media Control API doesn't provide volume
-        })
-    }
-
-    /// Creates an event stream using polling.
-    ///
-    /// This method creates a stream that emits `MediaEvent` items whenever media playback
-    /// state changes. The implementation uses periodic polling (every 1 second) to check
-    /// the state of all media sessions.
-    ///
-    /// # Returns
-    ///
-    /// Returns a stream that yields `MediaEvent` items when changes are detected.
-    fn create_event_stream_impl(manager: SessionManager) -> impl Stream<Item = MediaEvent> {
-        let (tx, rx) = mpsc::unbounded_channel();
-
-        tokio::spawn(async move {
-            let mut monitor = PlayerMonitor::new();
-            let mut poll_interval = interval(Duration::from_millis(1000));
-
-            loop {
-                poll_interval.tick().await;
-
-                // Get all current sessions
-                let sessions = match manager.GetSessions() {
-                    Ok(sessions) => sessions,
-                    Err(_) => {
-                        sleep(Duration::from_secs(1)).await;
-                        continue;
-                    }
-                };
-
-                let mut current_states = HashMap::new();
-
-                // Collect all session futures for parallel execution
-                let mut futures = Vec::new();
-                let mut session_ids = Vec::new();
-
-                for session in sessions {
-                    if let Ok(session_id) = Self::get_session_id(&session) {
-                        session_ids.push(session_id);
-                        futures.push(Self::get_session_state(&session));
-                    }
-                }
-
-                // Execute all queries in parallel
-                let results = futures::future::join_all(futures).await;
-
-                // Collect successful results
-                for (session_id, result) in session_ids.into_iter().zip(results) {
-                    if let Ok(state) = result {
-                        current_states.insert(session_id, state);
-                    }
-                }
-
-                // Process all changes and generate events
-                let events = monitor.process_sessions(current_states);
-
-                // Send all events
-                for event in events {
-                    if tx.send(event).is_err() {
-                        return; // Receiver dropped
-                    }
-                }
-            }
-        });
-
-        UnboundedReceiverStream::new(rx)
+    /// Creates a new Windows media watcher with a custom provider.
+    /// This is primarily for testing purposes.
+    #[cfg(test)]
+    pub fn with_provider(provider: Arc<dyn MediaSessionProvider>) -> Self {
+        Self { provider }
     }
 }
 
 #[async_trait]
 impl MediaWatcher for WindowsMediaWatcher {
     async fn list_players(&self) -> Result<Vec<String>> {
-        let sessions = self.get_all_sessions().await?;
-        let mut player_names = Vec::new();
-
-        for session in sessions {
-            if let Ok(id) = Self::get_session_id(&session) {
-                player_names.push(id);
-            }
-        }
-
-        Ok(player_names)
+        let sessions = self.provider.get_all_sessions().await?;
+        Ok(sessions.keys().cloned().collect())
     }
 
     async fn get_player(&self, player_name: &str) -> Result<PlayerInfo> {
-        let sessions = self.get_all_sessions().await?;
-
-        for session in sessions {
-            let session_id = Self::get_session_id(&session)?;
-            if session_id == player_name {
-                let state = Self::get_session_state(&session).await?;
-                return Ok(PlayerInfo {
-                    player_name: player_name.to_string(),
-                    current_track: Some(state.track),
-                    playback_state: state.playback_state,
-                    position: state.position,
-                    volume: state.volume,
-                });
-            }
-        }
-
-        Err(MediaWatcherError::PlayerNotFound(player_name.to_string()))
+        self.provider.get_session_info(player_name).await
     }
 
     async fn event_stream(&self) -> Result<EventStream> {
-        let manager = self.manager.clone();
-        let stream = Self::create_event_stream_impl(manager);
+        let stream = self.provider.create_event_stream();
         Ok(Box::pin(stream))
     }
 }
@@ -403,6 +426,174 @@ fn parse_playback_status(status: WinPlaybackStatus) -> PlaybackState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Mock media session provider for testing.
+    struct MockMediaSessionProvider {
+        sessions: HashMap<String, PlayerState>,
+    }
+
+    impl MockMediaSessionProvider {
+        fn new() -> Self {
+            Self {
+                sessions: HashMap::new(),
+            }
+        }
+
+        fn with_session(mut self, session_id: &str, state: PlayerState) -> Self {
+            self.sessions.insert(session_id.to_string(), state);
+            self
+        }
+    }
+
+    #[async_trait]
+    impl MediaSessionProvider for MockMediaSessionProvider {
+        async fn get_all_sessions(&self) -> Result<HashMap<String, PlayerState>> {
+            Ok(self.sessions.clone())
+        }
+
+        async fn get_session_info(&self, session_id: &str) -> Result<PlayerInfo> {
+            self.sessions
+                .get(session_id)
+                .map(|state| PlayerInfo {
+                    player_name: session_id.to_string(),
+                    current_track: Some(state.track.clone()),
+                    playback_state: state.playback_state,
+                    position: state.position,
+                    volume: state.volume,
+                })
+                .ok_or_else(|| MediaWatcherError::PlayerNotFound(session_id.to_string()))
+        }
+
+        fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send {
+            futures::stream::empty()
+        }
+    }
+
+    fn create_test_track_for_windows(title: &str) -> Track {
+        Track {
+            title: title.to_string(),
+            artist: vec!["Test Artist".to_string()],
+            album: Some("Test Album".to_string()),
+            album_artist: None,
+            track_number: None,
+            duration: Some(Duration::from_secs(180)),
+            art_url: None,
+        }
+    }
+
+    fn create_test_state_for_windows(
+        title: &str,
+        playback_state: PlaybackState,
+        position: Option<Duration>,
+    ) -> PlayerState {
+        PlayerState {
+            track: create_test_track_for_windows(title),
+            playback_state,
+            position,
+            volume: None,
+        }
+    }
+
+    // WindowsMediaWatcher tests with mock provider
+
+    #[tokio::test]
+    async fn test_list_players_with_no_sessions() {
+        let provider = Arc::new(MockMediaSessionProvider::new());
+        let watcher = WindowsMediaWatcher::with_provider(provider);
+
+        let players = watcher.list_players().await.unwrap();
+        assert_eq!(players.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_list_players_with_single_session() {
+        let state = create_test_state_for_windows(
+            "Test Song",
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+        );
+        let provider = Arc::new(MockMediaSessionProvider::new().with_session("Spotify.exe", state));
+        let watcher = WindowsMediaWatcher::with_provider(provider);
+
+        let players = watcher.list_players().await.unwrap();
+        assert_eq!(players.len(), 1);
+        assert!(players.contains(&"Spotify.exe".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_list_players_with_multiple_sessions() {
+        let spotify_state = create_test_state_for_windows(
+            "Spotify Song",
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+        );
+        let vlc_state = create_test_state_for_windows(
+            "VLC Song",
+            PlaybackState::Paused,
+            Some(Duration::from_secs(30)),
+        );
+        let provider = Arc::new(
+            MockMediaSessionProvider::new()
+                .with_session("Spotify.exe", spotify_state)
+                .with_session("vlc.exe", vlc_state),
+        );
+        let watcher = WindowsMediaWatcher::with_provider(provider);
+
+        let players = watcher.list_players().await.unwrap();
+        assert_eq!(players.len(), 2);
+        assert!(players.contains(&"Spotify.exe".to_string()));
+        assert!(players.contains(&"vlc.exe".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_get_player_with_active_session() {
+        let state = create_test_state_for_windows(
+            "Test Song",
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+        );
+        let provider = Arc::new(MockMediaSessionProvider::new().with_session("Spotify.exe", state));
+        let watcher = WindowsMediaWatcher::with_provider(provider);
+
+        let player_info = watcher.get_player("Spotify.exe").await.unwrap();
+        assert_eq!(player_info.player_name, "Spotify.exe");
+        assert!(player_info.current_track.is_some());
+        assert_eq!(player_info.current_track.unwrap().title, "Test Song");
+        assert_eq!(player_info.playback_state, PlaybackState::Playing);
+        assert_eq!(player_info.position, Some(Duration::from_secs(10)));
+    }
+
+    #[tokio::test]
+    async fn test_get_player_not_found() {
+        let provider = Arc::new(MockMediaSessionProvider::new());
+        let watcher = WindowsMediaWatcher::with_provider(provider);
+
+        let result = watcher.get_player("nonexistent.exe").await;
+        assert!(result.is_err());
+        if let Err(MediaWatcherError::PlayerNotFound(name)) = result {
+            assert_eq!(name, "nonexistent.exe");
+        } else {
+            panic!("Expected PlayerNotFound error");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_player_paused_state() {
+        let state = create_test_state_for_windows(
+            "Paused Song",
+            PlaybackState::Paused,
+            Some(Duration::from_secs(45)),
+        );
+        let provider = Arc::new(MockMediaSessionProvider::new().with_session("vlc.exe", state));
+        let watcher = WindowsMediaWatcher::with_provider(provider);
+
+        let player_info = watcher.get_player("vlc.exe").await.unwrap();
+        assert_eq!(player_info.player_name, "vlc.exe");
+        assert_eq!(player_info.playback_state, PlaybackState::Paused);
+        assert_eq!(player_info.position, Some(Duration::from_secs(45)));
+    }
+
+    // Playback status parsing tests
 
     #[test]
     fn test_parse_playback_status_playing() {
