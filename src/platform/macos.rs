@@ -853,12 +853,9 @@ mod tests {
 
         // Should only detect track change
         assert_eq!(events.len(), 1);
-        if let MediaEvent::TrackChanged { player_name, track } = &events[0] {
-            assert_eq!(player_name, "Music");
-            assert_eq!(track.title, "Song 2");
-        } else {
-            panic!("Expected TrackChanged event");
-        }
+        assert!(
+            matches!(&events[0], MediaEvent::TrackChanged { player_name, track } if player_name == "Music" && track.title == "Song 2")
+        );
     }
 
     #[test]
@@ -885,12 +882,9 @@ mod tests {
 
         // Should detect state change
         assert_eq!(events.len(), 1);
-        if let MediaEvent::StateChanged { player_name, state } = &events[0] {
-            assert_eq!(player_name, "Music");
-            assert_eq!(*state, PlaybackState::Paused);
-        } else {
-            panic!("Expected StateChanged event");
-        }
+        assert!(
+            matches!(&events[0], MediaEvent::StateChanged { player_name, state } if player_name == "Music" && *state == PlaybackState::Paused)
+        );
     }
 
     #[test]
@@ -917,16 +911,9 @@ mod tests {
 
         // Should detect position change
         assert_eq!(events.len(), 1);
-        if let MediaEvent::PositionChanged {
-            player_name,
-            position,
-        } = &events[0]
-        {
-            assert_eq!(player_name, "Music");
-            assert_eq!(*position, Duration::from_secs(60));
-        } else {
-            panic!("Expected PositionChanged event");
-        }
+        assert!(
+            matches!(&events[0], MediaEvent::PositionChanged { player_name, position } if player_name == "Music" && *position == Duration::from_secs(60))
+        );
     }
 
     #[test]
@@ -980,16 +967,9 @@ mod tests {
 
         // Should detect volume change
         assert_eq!(events.len(), 1);
-        if let MediaEvent::VolumeChanged {
-            player_name,
-            volume,
-        } = &events[0]
-        {
-            assert_eq!(player_name, "Music");
-            assert_eq!(*volume, 0.5);
-        } else {
-            panic!("Expected VolumeChanged event");
-        }
+        assert!(
+            matches!(&events[0], MediaEvent::VolumeChanged { player_name, volume } if player_name == "Music" && *volume == 0.5)
+        );
     }
 
     #[test]
@@ -1010,11 +990,9 @@ mod tests {
 
         // Should detect player removal
         assert_eq!(events.len(), 1);
-        if let MediaEvent::PlayerRemoved { player_name } = &events[0] {
-            assert_eq!(player_name, "Music");
-        } else {
-            panic!("Expected PlayerRemoved event");
-        }
+        assert!(
+            matches!(&events[0], MediaEvent::PlayerRemoved { player_name } if player_name == "Music")
+        );
 
         // State should be cleared
         assert!(!monitor.players.contains_key("Music"));

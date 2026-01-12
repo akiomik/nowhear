@@ -42,3 +42,4 @@ suspicious = { level = "warn", priority = -1 }
 
 multiple_crate_versions = "allow"
 unwrap_used = "warn"
+panic = "warn"

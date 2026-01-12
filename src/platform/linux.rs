@@ -692,12 +692,10 @@ mod tests {
         let watcher = LinuxMediaWatcher::with_provider(provider);
 
         let result = watcher.get_player("nonexistent").await;
-        assert!(result.is_err());
-        if let Err(MediaWatcherError::PlayerNotFound(name)) = result {
-            assert_eq!(name, "nonexistent");
-        } else {
-            panic!("Expected PlayerNotFound error");
-        }
+        assert_eq!(
+            result,
+            Err(MediaWatcherError::PlayerNotFound("nonexistent"))
+        );
     }
 
     #[tokio::test]
@@ -1058,12 +1056,9 @@ mod tests {
         monitor.detect_state_changes("spotify", &new_state, &mut events);
 
         assert_eq!(events.len(), 1);
-        if let MediaEvent::TrackChanged { player_name, track } = &events[0] {
-            assert_eq!(player_name, "spotify");
-            assert_eq!(track.title, "Song 2");
-        } else {
-            panic!("Expected TrackChanged event");
-        }
+        assert!(
+            matches!(&events[0], MediaEvent::TrackChanged { player_name, track } if player_name == "spotify" && track.title == "Song 2")
+        );
     }
 
     #[test]
@@ -1093,12 +1088,9 @@ mod tests {
         monitor.detect_state_changes("spotify", &new_state, &mut events);
 
         assert_eq!(events.len(), 1);
-        if let MediaEvent::StateChanged { player_name, state } = &events[0] {
-            assert_eq!(player_name, "spotify");
-            assert_eq!(*state, PlaybackState::Paused);
-        } else {
-            panic!("Expected StateChanged event");
-        }
+        assert!(
+            matches!(&events[0], MediaEvent::StateChanged { player_name, state } if player_name == "spotify" && *state == PlaybackState::Paused)
+        );
     }
 
     #[test]
@@ -1128,16 +1120,9 @@ mod tests {
         monitor.detect_state_changes("spotify", &new_state, &mut events);
 
         assert_eq!(events.len(), 1);
-        if let MediaEvent::VolumeChanged {
-            player_name,
-            volume,
-        } = &events[0]
-        {
-            assert_eq!(player_name, "spotify");
-            assert_eq!(*volume, 0.5);
-        } else {
-            panic!("Expected VolumeChanged event");
-        }
+        assert!(
+            matches!(&events[0], MediaEvent::VolumeChanged { player_name, state } if player_name == "spotify" && *volume == 0.5)
+        );
     }
 
     #[test]
@@ -1184,16 +1169,10 @@ mod tests {
         PlayerMonitor::detect_position_change("spotify", &current_state, &last_state, &mut events);
 
         assert_eq!(events.len(), 1);
-        if let MediaEvent::PositionChanged {
+        assert!(matches!(&events[0], MediaEvent::PositionChanged {
             player_name,
             position,
-        } = &events[0]
-        {
-            assert_eq!(player_name, "spotify");
-            assert_eq!(*position, Duration::from_secs(60));
-        } else {
-            panic!("Expected PositionChanged event");
-        }
+        } if player_name == "spotify" && *position == Duration::from_secs(60)));
     }
 
     #[test]
@@ -1217,16 +1196,10 @@ mod tests {
         PlayerMonitor::detect_position_change("spotify", &current_state, &last_state, &mut events);
 
         assert_eq!(events.len(), 1);
-        if let MediaEvent::PositionChanged {
+        assert!(matches!(&events[0], MediaEvent::PositionChanged {
             player_name,
             position,
-        } = &events[0]
-        {
-            assert_eq!(player_name, "spotify");
-            assert_eq!(*position, Duration::from_secs(10));
-        } else {
-            panic!("Expected PositionChanged event");
-        }
+        } if player_name == "spotify" && *position == Duration::from_secs(10)));
     }
 
     #[test]

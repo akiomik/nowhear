@@ -570,12 +570,10 @@ mod tests {
         let watcher = WindowsMediaWatcher::with_provider(provider);
 
         let result = watcher.get_player("nonexistent.exe").await;
-        assert!(result.is_err());
-        if let Err(MediaWatcherError::PlayerNotFound(name)) = result {
-            assert_eq!(name, "nonexistent.exe");
-        } else {
-            panic!("Expected PlayerNotFound error");
-        }
+        assert_eq!(
+            result,
+            Err(MediaWatcherError::PlayerNotFound("nonexistent.exe"))
+        );
     }
 
     #[tokio::test]
@@ -718,12 +716,9 @@ mod tests {
 
         // Should detect track change
         assert_eq!(events.len(), 1);
-        if let MediaEvent::TrackChanged { player_name, track } = &events[0] {
-            assert_eq!(player_name, "Spotify.exe");
-            assert_eq!(track.title, "Song 2");
-        } else {
-            panic!("Expected TrackChanged event");
-        }
+        assert_eq!(
+            matches!(&events[0], MediaEvent::TrackChanged { player_name, track } if player_name == "Spotify.exe" && track.title == "Song 2")
+        );
     }
 
     #[test]
@@ -754,12 +749,9 @@ mod tests {
 
         // Should detect state change
         assert_eq!(events.len(), 1);
-        if let MediaEvent::StateChanged { player_name, state } = &events[0] {
-            assert_eq!(player_name, "Spotify.exe");
-            assert_eq!(*state, PlaybackState::Paused);
-        } else {
-            panic!("Expected StateChanged event");
-        }
+        assert_eq!(
+            matches!(&events[0], MediaEvent::StateChanged { player_name, state } if player_name == "Spotify.exe" && *state == PlaybackState::Paused)
+        );
     }
 
     #[test]
@@ -790,16 +782,11 @@ mod tests {
 
         // Should detect position change
         assert_eq!(events.len(), 1);
-        if let MediaEvent::PositionChanged {
+        assert_eq!(matches!(&events[0], MediaEvent::PositionChanged {
             player_name,
             position,
-        } = &events[0]
-        {
-            assert_eq!(player_name, "Spotify.exe");
-            assert_eq!(*position, Duration::from_secs(60));
-        } else {
-            panic!("Expected PositionChanged event");
-        }
+        } if player_name == "Spotify.exe" && *position == Duration::from_secs(60)
+        ));
     }
 
     #[test]
@@ -853,11 +840,10 @@ mod tests {
 
         // Should detect player removal
         assert_eq!(events.len(), 1);
-        if let MediaEvent::PlayerRemoved { player_name } = &events[0] {
-            assert_eq!(player_name, "Spotify.exe");
-        } else {
-            panic!("Expected PlayerRemoved event");
-        }
+        assert_eq!(
+            matches!(&events[0], MediaEvent::PlayerRemoved { player_name } if player_name == "Spotify.exe"
+            )
+        );
 
         // State should be cleared
         assert!(!monitor.players.contains_key("Spotify.exe"));
