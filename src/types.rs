@@ -4,7 +4,7 @@ use std::time::Duration;
 ///
 /// This structure contains all available metadata about a track,
 /// such as title, artist, album information, and artwork URL.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Track {
     /// Track title
     pub title: String,
