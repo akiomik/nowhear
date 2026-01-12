@@ -155,7 +155,7 @@ pub struct MediaWatcherBuilder {
 
 impl MediaWatcherBuilder {
     /// Creates a new builder instance.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {}
     }
 
