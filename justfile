@@ -27,3 +27,6 @@ clippy-windows:
 
 fmt:
   cargo fmt --all
+
+doc-build:
+  cargo build --no-deps
