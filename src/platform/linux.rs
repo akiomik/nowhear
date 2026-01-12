@@ -151,8 +151,21 @@ impl PlayerDiscoveryProvider for MprisProvider {
 
 /// Linux media watcher implementation using MPRIS D-Bus interface.
 ///
-/// Note: This type is visible for technical reasons but should not be used directly.
-/// Use `MediaWatcherBuilder` to create media watchers.
+/// This implementation uses the [MPRIS (Media Player Remote Interfacing Specification)](https://specifications.freedesktop.org/mpris-spec/latest/)
+/// D-Bus interface to discover and interact with media players on Linux systems.
+/// It supports any media player that implements the MPRIS interface, including:
+///
+/// - Spotify
+/// - VLC
+/// - Rhythmbox
+/// - Audacious
+/// - And many more
+///
+/// # Note
+///
+/// This type is visible for technical reasons but should not be used directly.
+/// Use [`nowhear::MediaWatcherBuilder`] to create media watchers, which will
+/// automatically select this implementation on Linux systems.
 pub struct LinuxMediaWatcher<P: PlayerDiscoveryProvider = MprisProvider> {
     provider: Arc<P>,
 }

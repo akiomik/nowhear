@@ -127,15 +127,27 @@ impl AppleScriptProvider {
 
 /// macOS media watcher implementation using AppleScript.
 ///
-/// # Implementation Note
+/// This implementation uses AppleScript to query the state of media players on macOS.
+/// Currently supports:
+///
+/// - **Music.app** (formerly iTunes)
+/// - **Spotify**
+///
+/// # Implementation Details
 ///
 /// This implementation uses AppleScript for querying player state rather than
 /// `NSDistributedNotificationCenter`, which would require running on the main thread.
-/// The AppleScript approach with periodic polling offers a simpler alternative that
-/// works well in async contexts.
+/// The AppleScript approach with periodic polling (every 1 second) offers a simpler
+/// alternative that works well in async contexts.
 ///
-/// Note: This type is visible for technical reasons but should not be used directly.
-/// Use `MediaWatcherBuilder` to create media watchers.
+/// The polling interval is fixed at 1 second, which provides a good balance between
+/// responsiveness and system resource usage.
+///
+/// # Note
+///
+/// This type is visible for technical reasons but should not be used directly.
+/// Use [`nowhear::MediaWatcherBuilder`] to create media watchers, which will
+/// automatically select this implementation on macOS systems.
 pub struct MacOSMediaWatcher<P: PlayerStateProvider = AppleScriptProvider> {
     provider: Arc<P>,
 }

@@ -16,10 +16,10 @@
 //! ### Listing Players
 //!
 //! ```no_run
-//! use nowhear::{MediaWatcher, MediaWatcherBuilder};
+//! use nowhear::{MediaWatcher, MediaWatcherBuilder, Result};
 //!
 //! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! async fn main() -> Result<()> {
 //!     let watcher = MediaWatcherBuilder::new().build().await?;
 //!     let players = watcher.list_players().await?;
 //!     println!("Available players: {:?}", players);
@@ -30,10 +30,10 @@
 //! ### Getting Player Information
 //!
 //! ```no_run
-//! use nowhear::{MediaWatcher, MediaWatcherBuilder};
+//! use nowhear::{MediaWatcher, MediaWatcherBuilder, Result};
 //!
 //! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! async fn main() -> Result<()> {
 //!     let watcher = MediaWatcherBuilder::new().build().await?;
 //!     let player_info = watcher.get_player("spotify").await?;
 //!

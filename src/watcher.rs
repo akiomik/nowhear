@@ -1,8 +1,34 @@
+//! Media watcher trait and builder.
+//!
+//! This module provides the core [`MediaWatcher`] trait that defines the interface
+//! for interacting with media players, and the [`MediaWatcherBuilder`] for creating
+//! platform-specific implementations.
+
 use crate::error::Result;
 use crate::types::{MediaEvent, PlayerInfo};
 use futures::stream::BoxStream;
 
 /// Type alias for event stream returned by the media watcher.
+///
+/// This is a boxed stream that yields [`MediaEvent`] items. The stream is
+/// `'static` and can be moved across thread boundaries.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use nowhear::{MediaWatcher, MediaWatcherBuilder, Result};
+/// # use futures::StreamExt;
+/// # async fn example() -> Result<()> {
+/// let watcher = MediaWatcherBuilder::new().build().await?;
+/// let mut stream = watcher.event_stream().await?;
+///
+/// // Stream will emit events indefinitely
+/// while let Some(event) = stream.next().await {
+///     println!("Received event: {:?}", event);
+/// }
+/// # Ok(())
+/// # }
+/// ```
 pub type EventStream = BoxStream<'static, MediaEvent>;
 
 /// Main trait for media watching functionality.
@@ -20,8 +46,8 @@ pub trait MediaWatcher: Send + Sync {
     /// # Examples
     ///
     /// ```no_run
-    /// # use nowhear::{MediaWatcher, MediaWatcherBuilder};
-    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # use nowhear::{MediaWatcher, MediaWatcherBuilder, Result};
+    /// # async fn example() -> Result<()> {
     /// let watcher = MediaWatcherBuilder::new().build().await?;
     /// let players = watcher.list_players().await?;
     /// println!("Available players: {:?}", players);
@@ -47,8 +73,8 @@ pub trait MediaWatcher: Send + Sync {
     /// # Examples
     ///
     /// ```no_run
-    /// # use nowhear::{MediaWatcher, MediaWatcherBuilder};
-    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # use nowhear::{MediaWatcher, MediaWatcherBuilder, Result};
+    /// # async fn example() -> Result<()> {
     /// let watcher = MediaWatcherBuilder::new().build().await?;
     /// let player_info = watcher.get_player("spotify").await?;
     /// println!("Current track: {:?}", player_info.current_track);
@@ -72,9 +98,9 @@ pub trait MediaWatcher: Send + Sync {
     /// # Examples
     ///
     /// ```no_run
-    /// # use nowhear::{MediaWatcher, MediaWatcherBuilder};
+    /// # use nowhear::{MediaWatcher, MediaWatcherBuilder, Result};
     /// # use futures::StreamExt;
-    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # async fn example() -> Result<()> {
     /// let watcher = MediaWatcherBuilder::new().build().await?;
     /// let mut stream = watcher.event_stream().await?;
     /// while let Some(event) = stream.next().await {
@@ -88,9 +114,27 @@ pub trait MediaWatcher: Send + Sync {
 
 /// Platform-specific media watcher implementation.
 ///
-/// This enum wraps the appropriate platform-specific implementation
-/// based on the target operating system. Users typically don't need
-/// to interact with this type directly; use `MediaWatcherBuilder` instead.
+/// This enum wraps the appropriate platform-specific implementation based on the
+/// target operating system. Users typically don't need to interact with this type
+/// directly; use [`MediaWatcherBuilder`] instead.
+///
+/// # Platform Implementations
+///
+/// - **Linux**: Uses MPRIS D-Bus interface to communicate with media players
+/// - **macOS**: Uses AppleScript to query Music.app and Spotify
+/// - **Windows**: Uses Windows Media Control API (`GlobalSystemMediaTransportControlsSessionManager`)
+///
+/// # Examples
+///
+/// ```no_run
+/// use nowhear::{MediaWatcherBuilder, Result};
+///
+/// # async fn example() -> Result<()> {
+/// // The builder automatically selects the correct platform implementation
+/// let watcher = MediaWatcherBuilder::new().build().await?;
+/// # Ok(())
+/// # }
+/// ```
 pub enum PlatformMediaWatcher {
     #[cfg(target_os = "linux")]
     Linux(crate::platform::linux::LinuxMediaWatcher),
@@ -143,8 +187,8 @@ impl MediaWatcher for PlatformMediaWatcher {
 /// # Examples
 ///
 /// ```no_run
-/// # use nowhear::MediaWatcherBuilder;
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// # use nowhear::{MediaWatcherBuilder, Result};
+/// # async fn example() -> Result<()> {
 /// let watcher = MediaWatcherBuilder::new().build().await?;
 /// # Ok(())
 /// # }
@@ -155,6 +199,14 @@ pub struct MediaWatcherBuilder {
 
 impl MediaWatcherBuilder {
     /// Creates a new builder instance.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nowhear::MediaWatcherBuilder;
+    ///
+    /// let builder = MediaWatcherBuilder::new();
+    /// ```
     #[must_use]
     pub const fn new() -> Self {
         Self {}
@@ -205,6 +257,9 @@ impl MediaWatcherBuilder {
 }
 
 impl Default for MediaWatcherBuilder {
+    /// Creates a new builder using the default configuration.
+    ///
+    /// This is equivalent to calling [`MediaWatcherBuilder::new()`].
     fn default() -> Self {
         Self::new()
     }
