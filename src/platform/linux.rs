@@ -443,7 +443,7 @@ impl LinuxMediaWatcher<MprisProvider> {
     ///
     /// Note: This is an internal API. Use `MediaWatcherBuilder` instead.
     #[doc(hidden)]
-    pub async fn new() -> Result<Self> {
+    pub fn new() -> Result<Self> {
         Ok(Self {
             provider: Arc::new(MprisProvider::new()?),
         })

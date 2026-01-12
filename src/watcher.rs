@@ -177,7 +177,7 @@ impl MediaWatcherBuilder {
         #[cfg(target_os = "linux")]
         {
             Ok(PlatformMediaWatcher::Linux(
-                crate::platform::linux::LinuxMediaWatcher::new().await?,
+                crate::platform::linux::LinuxMediaWatcher::new()?,
             ))
         }
 
