@@ -457,9 +457,7 @@ mod tests {
             let players: Vec<String> = self
                 .states
                 .iter()
-                .filter_map(|(name, state)| {
-                    state.as_ref().map(|_| name.clone())
-                })
+                .filter_map(|(name, state)| state.as_ref().map(|_| name.clone()))
                 .collect();
             Ok(players)
         }
@@ -499,7 +497,7 @@ mod tests {
         let watcher = MacOSMediaWatcher::with_provider(provider);
 
         let players = watcher.list_players().await?;
-        assert_eq!(players.len(), 0);
+        assert_eq!(players, Vec::<String>::new());
 
         Ok(())
     }
@@ -516,8 +514,7 @@ mod tests {
         let watcher = MacOSMediaWatcher::with_provider(provider);
 
         let players = watcher.list_players().await?;
-        assert_eq!(players.len(), 1);
-        assert!(players.contains(&"Music".to_string()));
+        assert_eq!(players, vec!["Music".to_string()]);
 
         Ok(())
     }
@@ -543,10 +540,9 @@ mod tests {
         );
         let watcher = MacOSMediaWatcher::with_provider(provider);
 
-        let players = watcher.list_players().await?;
-        assert_eq!(players.len(), 2);
-        assert!(players.contains(&"Music".to_string()));
-        assert!(players.contains(&"Spotify".to_string()));
+        let mut players = watcher.list_players().await?;
+        players.sort();
+        assert_eq!(players, vec!["Music".to_string(), "Spotify".to_string()]);
 
         Ok(())
     }
@@ -564,11 +560,16 @@ mod tests {
         let watcher = MacOSMediaWatcher::with_provider(provider);
 
         let player_info = watcher.get_player("Music").await?;
-        assert_eq!(player_info.player_name, "Music");
-        assert_eq!(player_info.current_track, Some(track));
-        assert_eq!(player_info.playback_state, PlaybackState::Playing);
-        assert_eq!(player_info.position, Some(Duration::from_secs(10)));
-        assert_eq!(player_info.volume, Some(0.8));
+        assert_eq!(
+            player_info,
+            PlayerInfo {
+                player_name: "Music".to_string(),
+                current_track: Some(track),
+                playback_state: PlaybackState::Playing,
+                position: Some(Duration::from_secs(10)),
+                volume: Some(0.8),
+            }
+        );
 
         Ok(())
     }
@@ -579,17 +580,26 @@ mod tests {
         let watcher = MacOSMediaWatcher::with_provider(provider);
 
         let player_info = watcher.get_player("Music").await?;
-        assert_eq!(player_info.player_name, "Music");
-        assert_eq!(player_info.current_track, None);
-        assert_eq!(player_info.playback_state, PlaybackState::Stopped);
+
+        assert_eq!(
+            player_info,
+            PlayerInfo {
+                player_name: "Music".to_string(),
+                current_track: None,
+                playback_state: PlaybackState::Stopped,
+                position: None,
+                volume: None,
+            }
+        );
 
         Ok(())
     }
 
     #[tokio::test]
     async fn test_get_player_paused_state() -> Result<()> {
+        let track = create_test_track("Paused Song");
         let state = create_test_player_state_with_track(
-            create_test_track("Paused Song"),
+            track.clone(),
             PlaybackState::Paused,
             Some(Duration::from_secs(30)),
             Some(0.5),
@@ -598,9 +608,17 @@ mod tests {
         let watcher = MacOSMediaWatcher::with_provider(provider);
 
         let player_info = watcher.get_player("Spotify").await?;
-        assert_eq!(player_info.player_name, "Spotify");
-        assert_eq!(player_info.playback_state, PlaybackState::Paused);
-        assert_eq!(player_info.position, Some(Duration::from_secs(30)));
+
+        assert_eq!(
+            player_info,
+            PlayerInfo {
+                player_name: "Spotify".to_string(),
+                current_track: Some(track),
+                playback_state: PlaybackState::Paused,
+                position: Some(Duration::from_secs(30)),
+                volume: Some(0.5),
+            }
+        );
 
         Ok(())
     }
@@ -612,19 +630,23 @@ mod tests {
         let output = "Bohemian Rhapsody\tQueen\tA Night at the Opera\tplaying\t123.45\t75";
         let player_state = parse_apple_script_output(output).expect("should success");
 
-        assert_eq!(player_state.track.title, "Bohemian Rhapsody");
-        assert_eq!(player_state.track.artist, vec!["Queen"]);
         assert_eq!(
-            player_state.track.album,
-            Some("A Night at the Opera".to_string())
+            player_state,
+            PlayerState {
+                track: Track {
+                    title: "Bohemian Rhapsody".to_string(),
+                    artist: vec!["Queen".to_string()],
+                    album: Some("A Night at the Opera".to_string()),
+                    album_artist: None,
+                    track_number: None,
+                    duration: None,
+                    art_url: None
+                },
+                playback_state: PlaybackState::Playing,
+                position: Some(Duration::from_secs_f64(123.45)),
+                volume: Some(0.75),
+            }
         );
-        assert_eq!(player_state.track.album_artist, None);
-        assert_eq!(player_state.track.track_number, None);
-        assert_eq!(player_state.track.duration, None);
-        assert_eq!(player_state.track.art_url, None);
-        assert_eq!(player_state.playback_state, PlaybackState::Playing);
-        assert_eq!(player_state.position, Some(Duration::from_secs_f64(123.45)));
-        assert_eq!(player_state.volume, Some(0.75));
     }
 
     #[test]
@@ -632,12 +654,23 @@ mod tests {
         let output = "Test Song\tTest Artist\t\tplaying\t0\t100";
         let player_state = parse_apple_script_output(output).expect("should success");
 
-        assert_eq!(player_state.track.title, "Test Song");
-        assert_eq!(player_state.track.artist, vec!["Test Artist"]);
-        assert_eq!(player_state.track.album, None);
-        assert_eq!(player_state.playback_state, PlaybackState::Playing);
-        assert_eq!(player_state.position, Some(Duration::from_secs(0)));
-        assert_eq!(player_state.volume, Some(1.0));
+        assert_eq!(
+            player_state,
+            PlayerState {
+                track: Track {
+                    title: "Test Song".to_string(),
+                    artist: vec!["Test Artist".to_string()],
+                    album: None,
+                    album_artist: None,
+                    track_number: None,
+                    duration: None,
+                    art_url: None
+                },
+                playback_state: PlaybackState::Playing,
+                position: Some(Duration::from_secs(0)),
+                volume: Some(1.0),
+            }
+        );
     }
 
     #[test]
@@ -645,12 +678,23 @@ mod tests {
         let output = "Some Track\tSome Artist\tSome Album\tpaused\t60.5\t50";
         let player_state = parse_apple_script_output(output).expect("should success");
 
-        assert_eq!(player_state.track.title, "Some Track");
-        assert_eq!(player_state.track.artist, vec!["Some Artist"]);
-        assert_eq!(player_state.track.album, Some("Some Album".to_string()));
-        assert_eq!(player_state.playback_state, PlaybackState::Paused);
-        assert_eq!(player_state.position, Some(Duration::from_secs_f64(60.5)));
-        assert_eq!(player_state.volume, Some(0.5));
+        assert_eq!(
+            player_state,
+            PlayerState {
+                track: Track {
+                    title: "Some Track".to_string(),
+                    artist: vec!["Some Artist".to_string()],
+                    album: Some("Some Album".to_string()),
+                    album_artist: None,
+                    track_number: None,
+                    duration: None,
+                    art_url: None
+                },
+                playback_state: PlaybackState::Paused,
+                position: Some(Duration::from_secs_f64(60.5)),
+                volume: Some(0.5),
+            }
+        );
     }
 
     #[test]
@@ -658,13 +702,23 @@ mod tests {
         let output = "Song & Title (Remix)\tArtist: Name\tAlbum - Edition\tplaying\t30\t80";
         let player_state = parse_apple_script_output(output).expect("should success");
 
-        assert_eq!(player_state.track.title, "Song & Title (Remix)");
-        assert_eq!(player_state.track.artist, vec!["Artist: Name"]);
         assert_eq!(
-            player_state.track.album,
-            Some("Album - Edition".to_string())
+            player_state,
+            PlayerState {
+                track: Track {
+                    title: "Song & Title (Remix)".to_string(),
+                    artist: vec!["Artist: Name".to_string()],
+                    album: Some("Album - Edition".to_string()),
+                    album_artist: None,
+                    track_number: None,
+                    duration: None,
+                    art_url: None
+                },
+                playback_state: PlaybackState::Playing,
+                position: Some(Duration::from_secs(30)),
+                volume: Some(0.8),
+            }
         );
-        assert_eq!(player_state.playback_state, PlaybackState::Playing);
     }
 
     #[test]
@@ -672,13 +726,23 @@ mod tests {
         let output = "春よ、来い\t松任谷由実\tThe Dancing Sun\tplaying\t120\t65";
         let player_state = parse_apple_script_output(output).expect("should success");
 
-        assert_eq!(player_state.track.title, "春よ、来い");
-        assert_eq!(player_state.track.artist, vec!["松任谷由実"]);
         assert_eq!(
-            player_state.track.album,
-            Some("The Dancing Sun".to_string())
+            player_state,
+            PlayerState {
+                track: Track {
+                    title: "春よ、来い".to_string(),
+                    artist: vec!["松任谷由実".to_string()],
+                    album: Some("The Dancing Sun".to_string()),
+                    album_artist: None,
+                    track_number: None,
+                    duration: None,
+                    art_url: None
+                },
+                playback_state: PlaybackState::Playing,
+                position: Some(Duration::from_secs(120)),
+                volume: Some(0.65),
+            }
         );
-        assert_eq!(player_state.playback_state, PlaybackState::Playing);
     }
 
     #[test]
@@ -711,12 +775,23 @@ mod tests {
         let output = "Title\tArtist\tAlbum\tplaying";
         let player_state = parse_apple_script_output(output).expect("should success");
 
-        assert_eq!(player_state.track.title, "Title");
-        assert_eq!(player_state.track.artist, vec!["Artist"]);
-        assert_eq!(player_state.track.album, Some("Album".to_string()));
-        assert_eq!(player_state.playback_state, PlaybackState::Playing);
-        assert_eq!(player_state.position, None);
-        assert_eq!(player_state.volume, None);
+        assert_eq!(
+            player_state,
+            PlayerState {
+                track: Track {
+                    title: "Title".to_string(),
+                    artist: vec!["Artist".to_string()],
+                    album: Some("Album".to_string()),
+                    album_artist: None,
+                    track_number: None,
+                    duration: None,
+                    art_url: None
+                },
+                playback_state: PlaybackState::Playing,
+                position: None,
+                volume: None,
+            }
+        );
     }
 
     #[test]
@@ -725,13 +800,23 @@ mod tests {
         let player_state = parse_apple_script_output(output).expect("should success");
 
         // Note: The function doesn't trim individual fields, it preserves whitespace
-        assert_eq!(player_state.track.title, "  Trimmed Title  ");
-        assert_eq!(player_state.track.artist, vec!["  Trimmed Artist  "]);
         assert_eq!(
-            player_state.track.album,
-            Some("  Trimmed Album  ".to_string())
+            player_state,
+            PlayerState {
+                track: Track {
+                    title: "  Trimmed Title  ".to_string(),
+                    artist: vec!["  Trimmed Artist  ".to_string()],
+                    album: Some("  Trimmed Album  ".to_string()),
+                    album_artist: None,
+                    track_number: None,
+                    duration: None,
+                    art_url: None
+                },
+                playback_state: PlaybackState::Playing,
+                position: Some(Duration::from_secs(10)),
+                volume: Some(0.9),
+            }
         );
-        assert_eq!(player_state.playback_state, PlaybackState::Playing);
     }
 
     #[test]
@@ -740,13 +825,24 @@ mod tests {
         let output = "Title\tArtist\tAlbum";
         let player_state = parse_apple_script_output(output).expect("should success");
 
-        assert_eq!(player_state.track.title, "Title");
-        assert_eq!(player_state.track.artist, vec!["Artist"]);
-        assert_eq!(player_state.track.album, Some("Album".to_string()));
         // Should default to Playing when state is not provided
-        assert_eq!(player_state.playback_state, PlaybackState::Playing);
-        assert_eq!(player_state.position, None);
-        assert_eq!(player_state.volume, None);
+        assert_eq!(
+            player_state,
+            PlayerState {
+                track: Track {
+                    title: "Title".to_string(),
+                    artist: vec!["Artist".to_string()],
+                    album: Some("Album".to_string()),
+                    album_artist: None,
+                    track_number: None,
+                    duration: None,
+                    art_url: None
+                },
+                playback_state: PlaybackState::Playing,
+                position: None,
+                volume: None,
+            }
+        );
     }
 
     #[test]
@@ -777,28 +873,6 @@ mod tests {
 
     // PlayerMonitor tests
 
-    fn create_test_player_state(
-        title: &str,
-        playback_state: PlaybackState,
-        position: Option<Duration>,
-        volume: Option<f64>,
-    ) -> PlayerState {
-        PlayerState {
-            track: Track {
-                title: title.to_string(),
-                artist: vec!["Test Artist".to_string()],
-                album: Some("Test Album".to_string()),
-                album_artist: None,
-                track_number: None,
-                duration: Some(Duration::from_secs(180)),
-                art_url: None,
-            },
-            playback_state,
-            position,
-            volume,
-        }
-    }
-
     #[test]
     fn test_player_monitor_new() {
         let monitor = PlayerMonitor::new();
@@ -809,8 +883,9 @@ mod tests {
     #[test]
     fn test_player_monitor_first_player_added() {
         let mut monitor = PlayerMonitor::new();
-        let state = create_test_player_state(
-            "Song 1",
+        let track = create_test_track("Song 1");
+        let state = create_test_player_state_with_track(
+            track.clone(),
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             Some(0.8),
@@ -819,10 +894,22 @@ mod tests {
         let events = monitor.process_player("Music", Some(state));
 
         // Should get: PlayerAdded, TrackChanged, StateChanged
-        assert_eq!(events.len(), 3);
-        assert!(matches!(events[0], MediaEvent::PlayerAdded { .. }));
-        assert!(matches!(events[1], MediaEvent::TrackChanged { .. }));
-        assert!(matches!(events[2], MediaEvent::StateChanged { .. }));
+        assert_eq!(
+            events,
+            vec![
+                MediaEvent::PlayerAdded {
+                    player_name: "Music".to_string()
+                },
+                MediaEvent::TrackChanged {
+                    player_name: "Music".to_string(),
+                    track,
+                },
+                MediaEvent::StateChanged {
+                    player_name: "Music".to_string(),
+                    state: PlaybackState::Playing
+                },
+            ]
+        );
     }
 
     #[test]
@@ -830,8 +917,9 @@ mod tests {
         let mut monitor = PlayerMonitor::new();
 
         // Initial state
-        let initial_state = create_test_player_state(
-            "Song 1",
+        let track1 = create_test_track("Song 1");
+        let initial_state = create_test_player_state_with_track(
+            track1,
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             Some(0.8),
@@ -839,8 +927,9 @@ mod tests {
         monitor.process_player("Music", Some(initial_state));
 
         // New state with different track (keep position similar to avoid position change event)
-        let new_state = create_test_player_state(
-            "Song 2",
+        let track2 = create_test_track("Song 2");
+        let new_state = create_test_player_state_with_track(
+            track2.clone(),
             PlaybackState::Playing,
             Some(Duration::from_secs(11)), // Only 1 second difference
             Some(0.8),
@@ -848,9 +937,12 @@ mod tests {
         let events = monitor.process_player("Music", Some(new_state));
 
         // Should only detect track change
-        assert_eq!(events.len(), 1);
-        assert!(
-            matches!(&events[0], MediaEvent::TrackChanged { player_name, track } if player_name == "Music" && track.title == "Song 2")
+        assert_eq!(
+            events,
+            vec![MediaEvent::TrackChanged {
+                player_name: "Music".to_string(),
+                track: track2
+            }]
         );
     }
 
@@ -859,8 +951,9 @@ mod tests {
         let mut monitor = PlayerMonitor::new();
 
         // Initial state
-        let initial_state = create_test_player_state(
-            "Song 1",
+        let track = create_test_track("Song 1");
+        let initial_state = create_test_player_state_with_track(
+            track.clone(),
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             Some(0.8),
@@ -868,8 +961,8 @@ mod tests {
         monitor.process_player("Music", Some(initial_state));
 
         // New state with different playback state
-        let new_state = create_test_player_state(
-            "Song 1",
+        let new_state = create_test_player_state_with_track(
+            track,
             PlaybackState::Paused,
             Some(Duration::from_secs(10)),
             Some(0.8),
@@ -877,9 +970,12 @@ mod tests {
         let events = monitor.process_player("Music", Some(new_state));
 
         // Should detect state change
-        assert_eq!(events.len(), 1);
-        assert!(
-            matches!(&events[0], MediaEvent::StateChanged { player_name, state } if player_name == "Music" && *state == PlaybackState::Paused)
+        assert_eq!(
+            events,
+            vec![MediaEvent::StateChanged {
+                player_name: "Music".to_string(),
+                state: PlaybackState::Paused
+            }]
         );
     }
 
@@ -888,8 +984,9 @@ mod tests {
         let mut monitor = PlayerMonitor::new();
 
         // Initial state
-        let initial_state = create_test_player_state(
-            "Song 1",
+        let track = create_test_track("Song 1");
+        let initial_state = create_test_player_state_with_track(
+            track.clone(),
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             Some(0.8),
@@ -897,8 +994,8 @@ mod tests {
         monitor.process_player("Music", Some(initial_state));
 
         // New state with significant position jump
-        let new_state = create_test_player_state(
-            "Song 1",
+        let new_state = create_test_player_state_with_track(
+            track,
             PlaybackState::Playing,
             Some(Duration::from_secs(60)), // Jumped 50 seconds
             Some(0.8),
@@ -906,9 +1003,12 @@ mod tests {
         let events = monitor.process_player("Music", Some(new_state));
 
         // Should detect position change
-        assert_eq!(events.len(), 1);
-        assert!(
-            matches!(&events[0], MediaEvent::PositionChanged { player_name, position } if player_name == "Music" && *position == Duration::from_secs(60))
+        assert_eq!(
+            events,
+            vec![MediaEvent::PositionChanged {
+                player_name: "Music".to_string(),
+                position: Duration::from_secs(60)
+            }]
         );
     }
 
@@ -917,8 +1017,9 @@ mod tests {
         let mut monitor = PlayerMonitor::new();
 
         // Initial state
-        let initial_state = create_test_player_state(
-            "Song 1",
+        let track = create_test_track("Song 1");
+        let initial_state = create_test_player_state_with_track(
+            track.clone(),
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             Some(0.8),
@@ -926,8 +1027,8 @@ mod tests {
         monitor.process_player("Music", Some(initial_state));
 
         // New state with normal 1 second progression
-        let new_state = create_test_player_state(
-            "Song 1",
+        let new_state = create_test_player_state_with_track(
+            track,
             PlaybackState::Playing,
             Some(Duration::from_secs(11)),
             Some(0.8),
@@ -935,7 +1036,7 @@ mod tests {
         let events = monitor.process_player("Music", Some(new_state));
 
         // Should not detect position change for normal playback
-        assert_eq!(events.len(), 0);
+        assert_eq!(events, Vec::<MediaEvent>::new());
     }
 
     #[test]
@@ -944,8 +1045,9 @@ mod tests {
         let mut monitor = PlayerMonitor::new();
 
         // Initial state
-        let initial_state = create_test_player_state(
-            "Song 1",
+        let track = create_test_track("Song 1");
+        let initial_state = create_test_player_state_with_track(
+            track.clone(),
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             Some(0.8),
@@ -953,8 +1055,8 @@ mod tests {
         monitor.process_player("Music", Some(initial_state));
 
         // New state with different volume
-        let new_state = create_test_player_state(
-            "Song 1",
+        let new_state = create_test_player_state_with_track(
+            track,
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             Some(0.5),
@@ -962,9 +1064,12 @@ mod tests {
         let events = monitor.process_player("Music", Some(new_state));
 
         // Should detect volume change
-        assert_eq!(events.len(), 1);
-        assert!(
-            matches!(&events[0], MediaEvent::VolumeChanged { player_name, volume } if player_name == "Music" && *volume == 0.5)
+        assert_eq!(
+            events,
+            vec![MediaEvent::VolumeChanged {
+                player_name: "Music".to_string(),
+                volume: 0.5
+            }]
         );
     }
 
@@ -973,8 +1078,9 @@ mod tests {
         let mut monitor = PlayerMonitor::new();
 
         // Initial state - player running
-        let initial_state = create_test_player_state(
-            "Song 1",
+        let track = create_test_track("Song 1");
+        let initial_state = create_test_player_state_with_track(
+            track,
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             Some(0.8),
@@ -985,9 +1091,11 @@ mod tests {
         let events = monitor.process_player("Music", None);
 
         // Should detect player removal
-        assert_eq!(events.len(), 1);
-        assert!(
-            matches!(&events[0], MediaEvent::PlayerRemoved { player_name } if player_name == "Music")
+        assert_eq!(
+            events,
+            vec![MediaEvent::PlayerRemoved {
+                player_name: "Music".to_string()
+            }]
         );
 
         // State should be cleared
@@ -999,24 +1107,56 @@ mod tests {
         let mut monitor = PlayerMonitor::new();
 
         // Add Music.app
-        let music_state = create_test_player_state(
-            "Song 1",
+        let track1 = create_test_track("Song 1");
+        let music_state = create_test_player_state_with_track(
+            track1.clone(),
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             Some(0.8),
         );
         let events = monitor.process_player("Music", Some(music_state));
-        assert_eq!(events.len(), 3); // Added + Track + State
+        assert_eq!(
+            events,
+            vec![
+                MediaEvent::PlayerAdded {
+                    player_name: "Music".to_string()
+                },
+                MediaEvent::TrackChanged {
+                    player_name: "Music".to_string(),
+                    track: track1
+                },
+                MediaEvent::StateChanged {
+                    player_name: "Music".to_string(),
+                    state: PlaybackState::Playing
+                },
+            ]
+        );
 
         // Add Spotify
-        let spotify_state = create_test_player_state(
-            "Song 2",
+        let track2 = create_test_track("Song 2");
+        let spotify_state = create_test_player_state_with_track(
+            track2.clone(),
             PlaybackState::Playing,
             Some(Duration::from_secs(5)),
             Some(0.7),
         );
         let events = monitor.process_player("Spotify", Some(spotify_state));
-        assert_eq!(events.len(), 3); // Added + Track + State
+        assert_eq!(
+            events,
+            vec![
+                MediaEvent::PlayerAdded {
+                    player_name: "Spotify".to_string()
+                },
+                MediaEvent::TrackChanged {
+                    player_name: "Spotify".to_string(),
+                    track: track2
+                },
+                MediaEvent::StateChanged {
+                    player_name: "Spotify".to_string(),
+                    state: PlaybackState::Playing
+                },
+            ]
+        );
 
         // Both should be tracked
         assert_eq!(monitor.players.len(), 2);
@@ -1029,8 +1169,9 @@ mod tests {
         let mut monitor = PlayerMonitor::new();
 
         // Initial state
-        let initial_state = create_test_player_state(
-            "Song 1",
+        let track1 = create_test_track("Song 1");
+        let initial_state = create_test_player_state_with_track(
+            track1,
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             Some(0.8),
@@ -1038,8 +1179,9 @@ mod tests {
         monitor.process_player("Music", Some(initial_state));
 
         // New state with multiple changes
-        let new_state = create_test_player_state(
-            "Song 2",
+        let track2 = create_test_track("Song 2");
+        let new_state = create_test_player_state_with_track(
+            track2.clone(),
             PlaybackState::Paused,
             Some(Duration::from_secs(60)),
             Some(0.5),
@@ -1047,25 +1189,27 @@ mod tests {
         let events = monitor.process_player("Music", Some(new_state));
 
         // Should detect all changes: track, state, position, volume
-        assert_eq!(events.len(), 4);
-
-        let has_track_change = events
-            .iter()
-            .any(|e| matches!(e, MediaEvent::TrackChanged { .. }));
-        let has_state_change = events
-            .iter()
-            .any(|e| matches!(e, MediaEvent::StateChanged { .. }));
-        let has_position_change = events
-            .iter()
-            .any(|e| matches!(e, MediaEvent::PositionChanged { .. }));
-        let has_volume_change = events
-            .iter()
-            .any(|e| matches!(e, MediaEvent::VolumeChanged { .. }));
-
-        assert!(has_track_change);
-        assert!(has_state_change);
-        assert!(has_position_change);
-        assert!(has_volume_change);
+        assert_eq!(
+            events,
+            vec![
+                MediaEvent::TrackChanged {
+                    player_name: "Music".to_string(),
+                    track: track2
+                },
+                MediaEvent::StateChanged {
+                    player_name: "Music".to_string(),
+                    state: PlaybackState::Paused
+                },
+                MediaEvent::PositionChanged {
+                    player_name: "Music".to_string(),
+                    position: Duration::from_secs(60)
+                },
+                MediaEvent::VolumeChanged {
+                    player_name: "Music".to_string(),
+                    volume: 0.5
+                },
+            ]
+        );
     }
 
     #[test]
@@ -1073,8 +1217,9 @@ mod tests {
         let mut monitor = PlayerMonitor::new();
 
         // Initial state
-        let state = create_test_player_state(
-            "Song 1",
+        let track = create_test_track("Song 1");
+        let state = create_test_player_state_with_track(
+            track,
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             Some(0.8),
@@ -1085,6 +1230,6 @@ mod tests {
         let events = monitor.process_player("Music", Some(state));
 
         // Should not generate any events
-        assert_eq!(events.len(), 0);
+        assert_eq!(events, Vec::<MediaEvent>::new());
     }
 }

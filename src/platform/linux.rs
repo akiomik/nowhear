@@ -608,7 +608,7 @@ mod tests {
         let watcher = LinuxMediaWatcher::with_provider(provider);
 
         let players = watcher.list_players().await?;
-        assert_eq!(players.len(), 0);
+        assert_eq!(players, Vec::<String>::new());
 
         Ok(())
     }
@@ -626,8 +626,7 @@ mod tests {
         let watcher = LinuxMediaWatcher::with_provider(provider);
 
         let players = watcher.list_players().await?;
-        assert_eq!(players.len(), 1);
-        assert!(players.contains(&"spotify".to_string()));
+        assert_eq!(players, vec!["spotify".to_string()]);
 
         Ok(())
     }
@@ -656,9 +655,7 @@ mod tests {
         let watcher = LinuxMediaWatcher::with_provider(provider);
 
         let players = watcher.list_players().await?;
-        assert_eq!(players.len(), 2);
-        assert!(players.contains(&"spotify".to_string()));
-        assert!(players.contains(&"vlc".to_string()));
+        assert_eq!(players, vec!["spotify".to_string(), "vlc".to_string()]);
 
         Ok(())
     }
@@ -677,11 +674,16 @@ mod tests {
         let watcher = LinuxMediaWatcher::with_provider(provider);
 
         let player_info = watcher.get_player("spotify").await?;
-        assert_eq!(player_info.player_name, "spotify");
-        assert_eq!(player_info.current_track, Some(track));
-        assert_eq!(player_info.playback_state, PlaybackState::Playing);
-        assert_eq!(player_info.position, Some(Duration::from_secs(10)));
-        assert_eq!(player_info.volume, Some(0.8));
+        assert_eq!(
+            player_info,
+            PlayerInfo {
+                player_name: "spotify".to_string(),
+                current_track: Some(track),
+                playback_state: PlaybackState::Playing,
+                position: Some(Duration::from_secs(10)),
+                volume: Some(0.8),
+            }
+        );
 
         Ok(())
     }
@@ -700,9 +702,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_player_paused_state() -> Result<()> {
+        let track = create_test_track_for_linux("Paused Song");
         let info = create_test_player_info(
             "vlc",
-            Some(create_test_track_for_linux("Paused Song")),
+            Some(track.clone()),
             PlaybackState::Paused,
             Some(Duration::from_secs(45)),
             Some(0.6),
@@ -711,9 +714,16 @@ mod tests {
         let watcher = LinuxMediaWatcher::with_provider(provider);
 
         let player_info = watcher.get_player("vlc").await?;
-        assert_eq!(player_info.player_name, "vlc");
-        assert_eq!(player_info.playback_state, PlaybackState::Paused);
-        assert_eq!(player_info.position, Some(Duration::from_secs(45)));
+        assert_eq!(
+            player_info,
+            PlayerInfo {
+                player_name: "vlc".to_string(),
+                current_track: Some(track),
+                playback_state: PlaybackState::Paused,
+                position: Some(Duration::from_secs(45)),
+                volume: Some(0.6),
+            }
+        );
 
         Ok(())
     }
@@ -780,13 +790,18 @@ mod tests {
         let metadata = create_metadata(values);
         let track = parse_metadata(&metadata);
 
-        assert_eq!(track.title, "Test Song");
-        assert_eq!(track.artist, vec!["Test Artist"]);
-        assert_eq!(track.album, Some("Test Album".to_string()));
-        assert_eq!(track.album_artist, Some(vec!["Album Artist".to_string()]));
-        assert_eq!(track.track_number, Some(5));
-        assert_eq!(track.duration, Some(Duration::from_secs(180)));
-        assert_eq!(track.art_url, Some("file:///path/to/art.jpg".to_string()));
+        assert_eq!(
+            track,
+            Track {
+                title: "Test Song".to_string(),
+                artist: vec!["Test Artist".to_string()],
+                album: Some("Test Album".to_string()),
+                album_artist: Some(vec!["Album Artist".to_string()]),
+                track_number: Some(5),
+                duration: Some(Duration::from_secs(180)),
+                art_url: Some("file:///path/to/art.jpg".to_string()),
+            }
+        );
     }
 
     #[test]
@@ -808,8 +823,22 @@ mod tests {
         let metadata = create_metadata(values);
         let track = parse_metadata(&metadata);
 
-        assert_eq!(track.title, "Collaboration Song");
-        assert_eq!(track.artist, vec!["Artist 1", "Artist 2", "Artist 3"]);
+        assert_eq!(
+            track,
+            Track {
+                title: "Collaboration Song".to_string(),
+                artist: vec![
+                    "Artist 1".to_string(),
+                    "Artist 2".to_string(),
+                    "Artist 3".to_string()
+                ],
+                album: None,
+                album_artist: None,
+                track_number: None,
+                duration: None,
+                art_url: None,
+            }
+        );
     }
 
     #[test]
@@ -823,13 +852,18 @@ mod tests {
         let metadata = create_metadata(values);
         let track = parse_metadata(&metadata);
 
-        assert_eq!(track.title, "Minimal Song");
-        assert_eq!(track.artist, Vec::<String>::new());
-        assert_eq!(track.album, None);
-        assert_eq!(track.album_artist, None);
-        assert_eq!(track.track_number, None);
-        assert_eq!(track.duration, None);
-        assert_eq!(track.art_url, None);
+        assert_eq!(
+            track,
+            Track {
+                title: "Minimal Song".to_string(),
+                artist: Vec::<String>::new(),
+                album: None,
+                album_artist: None,
+                track_number: None,
+                duration: None,
+                art_url: None,
+            }
+        );
     }
 
     #[test]
@@ -843,8 +877,18 @@ mod tests {
         let metadata = create_metadata(values);
         let track = parse_metadata(&metadata);
 
-        assert_eq!(track.title, "Unknown");
-        assert_eq!(track.artist, vec!["Artist Only"]);
+        assert_eq!(
+            track,
+            Track {
+                title: "Unknown".to_string(),
+                artist: vec!["Artist Only".to_string()],
+                album: None,
+                album_artist: None,
+                track_number: None,
+                duration: None,
+                art_url: None,
+            }
+        );
     }
 
     #[test]
@@ -853,9 +897,18 @@ mod tests {
         let metadata = create_metadata(values);
         let track = parse_metadata(&metadata);
 
-        assert_eq!(track.title, "Unknown");
-        assert_eq!(track.artist, Vec::<String>::new());
-        assert_eq!(track.album, None);
+        assert_eq!(
+            track,
+            Track {
+                title: "Unknown".to_string(),
+                artist: Vec::<String>::new(),
+                album: None,
+                album_artist: None,
+                track_number: None,
+                duration: None,
+                art_url: None,
+            }
+        );
     }
 
     #[test]
@@ -877,9 +930,18 @@ mod tests {
         let metadata = create_metadata(values);
         let track = parse_metadata(&metadata);
 
-        assert_eq!(track.title, "テスト曲");
-        assert_eq!(track.artist, vec!["アーティスト名"]);
-        assert_eq!(track.album, Some("アルバム🎵".to_string()));
+        assert_eq!(
+            track,
+            Track {
+                title: "テスト曲".to_string(),
+                artist: vec!["アーティスト名".to_string()],
+                album: Some("アルバム🎵".to_string()),
+                album_artist: None,
+                track_number: None,
+                duration: None,
+                art_url: None,
+            }
+        );
     }
 
     #[test]
@@ -901,9 +963,18 @@ mod tests {
         let metadata = create_metadata(values);
         let track = parse_metadata(&metadata);
 
-        assert_eq!(track.title, "Song: The \"Best\" & Greatest (2024)");
-        assert_eq!(track.artist, vec!["Artist's Name / Band"]);
-        assert_eq!(track.album, Some("Album <Special Edition>".to_string()));
+        assert_eq!(
+            track,
+            Track {
+                title: "Song: The \"Best\" & Greatest (2024)".to_string(),
+                artist: vec!["Artist's Name / Band".to_string()],
+                album: Some("Album <Special Edition>".to_string()),
+                album_artist: None,
+                track_number: None,
+                duration: None,
+                art_url: None,
+            }
+        );
     }
 
     #[test]
@@ -933,8 +1004,16 @@ mod tests {
         let track = parse_metadata(&metadata);
 
         assert_eq!(
-            track.album_artist,
-            Some(vec!["Artist A".to_string(), "Artist B".to_string()])
+            track,
+            Track {
+                title: "Compilation Track".to_string(),
+                artist: vec!["Artist A".to_string(), "Artist B".to_string()],
+                album: Some("Various Artists".to_string()),
+                album_artist: None,
+                track_number: None,
+                duration: None,
+                art_url: None,
+            }
         );
     }
 
@@ -1002,8 +1081,9 @@ mod tests {
         let monitor = PlayerMonitor::new();
         let mut events = Vec::new();
 
+        let track = create_test_track("Song 1");
         let state = create_test_state(
-            Some(create_test_track("Song 1")),
+            Some(track.clone()),
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             Some(0.8),
@@ -1011,9 +1091,19 @@ mod tests {
 
         monitor.detect_state_changes("spotify", &state, &mut events);
 
-        assert_eq!(events.len(), 2);
-        assert!(matches!(events[0], MediaEvent::TrackChanged { .. }));
-        assert!(matches!(events[1], MediaEvent::StateChanged { .. }));
+        assert_eq!(
+            events,
+            vec![
+                MediaEvent::TrackChanged {
+                    player_name: "spotify".to_string(),
+                    track
+                },
+                MediaEvent::StateChanged {
+                    player_name: "spotify".to_string(),
+                    state: PlaybackState::Playing
+                }
+            ]
+        );
     }
 
     #[test]
@@ -1026,7 +1116,7 @@ mod tests {
         monitor.detect_state_changes("spotify", &state, &mut events);
 
         // No events should be generated for a player with no track
-        assert_eq!(events.len(), 0);
+        assert_eq!(events, Vec::<MediaEvent>::new());
     }
 
     #[test]
@@ -1035,8 +1125,9 @@ mod tests {
         let mut events = Vec::new();
 
         // Initial state
+        let track1 = create_test_track("Song 1");
         let initial_state = create_test_state(
-            Some(create_test_track("Song 1")),
+            Some(track1),
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             Some(0.8),
@@ -1046,8 +1137,9 @@ mod tests {
             .insert("spotify".to_string(), initial_state);
 
         // New state with different track
+        let track2 = create_test_track("Song 2");
         let new_state = create_test_state(
-            Some(create_test_track("Song 2")),
+            Some(track2.clone()),
             PlaybackState::Playing,
             Some(Duration::from_secs(5)),
             Some(0.8),
@@ -1055,9 +1147,12 @@ mod tests {
 
         monitor.detect_state_changes("spotify", &new_state, &mut events);
 
-        assert_eq!(events.len(), 1);
-        assert!(
-            matches!(&events[0], MediaEvent::TrackChanged { player_name, track } if player_name == "spotify" && track.title == "Song 2")
+        assert_eq!(
+            events,
+            vec![MediaEvent::TrackChanged {
+                player_name: "spotify".to_string(),
+                track: track2
+            }]
         );
     }
 
@@ -1087,9 +1182,12 @@ mod tests {
 
         monitor.detect_state_changes("spotify", &new_state, &mut events);
 
-        assert_eq!(events.len(), 1);
-        assert!(
-            matches!(&events[0], MediaEvent::StateChanged { player_name, state } if player_name == "spotify" && *state == PlaybackState::Paused)
+        assert_eq!(
+            events,
+            vec![MediaEvent::StateChanged {
+                player_name: "spotify".to_string(),
+                state: PlaybackState::Paused
+            }]
         );
     }
 
@@ -1119,9 +1217,12 @@ mod tests {
 
         monitor.detect_state_changes("spotify", &new_state, &mut events);
 
-        assert_eq!(events.len(), 1);
-        assert!(
-            matches!(&events[0], MediaEvent::VolumeChanged { player_name, state } if player_name == "spotify" && *volume == 0.5)
+        assert_eq!(
+            events,
+            vec![MediaEvent::VolumeChanged {
+                player_name: "spotify".to_string(),
+                state: *volume == 0.5
+            }]
         );
     }
 
@@ -1145,7 +1246,7 @@ mod tests {
         monitor.detect_state_changes("spotify", &state, &mut events);
 
         // No events should be generated
-        assert_eq!(events.len(), 0);
+        assert_eq!(events, Vec::<MediaEvent>::new());
     }
 
     #[test]
@@ -1168,11 +1269,13 @@ mod tests {
 
         PlayerMonitor::detect_position_change("spotify", &current_state, &last_state, &mut events);
 
-        assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], MediaEvent::PositionChanged {
-            player_name,
-            position,
-        } if player_name == "spotify" && *position == Duration::from_secs(60)));
+        assert_eq!(
+            events,
+            vec![MediaEvent::PositionChanged {
+                player_name: "spotify".to_string(),
+                position: Duration::from_secs(60),
+            }]
+        );
     }
 
     #[test]
@@ -1195,11 +1298,13 @@ mod tests {
 
         PlayerMonitor::detect_position_change("spotify", &current_state, &last_state, &mut events);
 
-        assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], MediaEvent::PositionChanged {
-            player_name,
-            position,
-        } if player_name == "spotify" && *position == Duration::from_secs(10)));
+        assert_eq!(
+            events,
+            vec![MediaEvent::PositionChanged {
+                player_name: "spotify".to_string(),
+                position: Duration::from_secs(10),
+            }]
+        );
     }
 
     #[test]
@@ -1223,7 +1328,7 @@ mod tests {
         PlayerMonitor::detect_position_change("spotify", &current_state, &last_state, &mut events);
 
         // No event for normal playback progression
-        assert_eq!(events.len(), 0);
+        assert_eq!(events, Vec::<MediaEvent>::new());
     }
 
     #[test]
@@ -1247,7 +1352,7 @@ mod tests {
         PlayerMonitor::detect_position_change("spotify", &current_state, &last_state, &mut events);
 
         // Exactly 2 seconds should NOT trigger (threshold is > 2 seconds)
-        assert_eq!(events.len(), 0);
+        assert_eq!(events, Vec::<MediaEvent>::new());
     }
 
     #[test]
@@ -1271,7 +1376,7 @@ mod tests {
         PlayerMonitor::detect_position_change("spotify", &current_state, &last_state, &mut events);
 
         // No event when position info is missing
-        assert_eq!(events.len(), 0);
+        assert_eq!(events, Vec::<MediaEvent>::new());
     }
 
     #[test]
@@ -1280,8 +1385,9 @@ mod tests {
         let mut events = Vec::new();
 
         // Initial state
+        let track = create_test_track("Song 1");
         let initial_state = create_test_state(
-            Some(create_test_track("Song 1")),
+            Some(track.clone()),
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             Some(0.8),
@@ -1301,24 +1407,26 @@ mod tests {
         monitor.detect_state_changes("spotify", &new_state, &mut events);
 
         // Should detect: track change, state change, position change, volume change
-        assert_eq!(events.len(), 4);
-
-        let has_track_change = events
-            .iter()
-            .any(|e| matches!(e, MediaEvent::TrackChanged { .. }));
-        let has_state_change = events
-            .iter()
-            .any(|e| matches!(e, MediaEvent::StateChanged { .. }));
-        let has_position_change = events
-            .iter()
-            .any(|e| matches!(e, MediaEvent::PositionChanged { .. }));
-        let has_volume_change = events
-            .iter()
-            .any(|e| matches!(e, MediaEvent::VolumeChanged { .. }));
-
-        assert!(has_track_change);
-        assert!(has_state_change);
-        assert!(has_position_change);
-        assert!(has_volume_change);
+        assert_eq!(
+            events,
+            vec![
+                MediaEvent::TrackChanged {
+                    player_name: "spotify".to_string(),
+                    track: track.clone(),
+                },
+                MediaEvent::StateChanged {
+                    player_name: "spotify".to_string(),
+                    state: PlaybackState::Paused,
+                },
+                MediaEvent::PositionChanged {
+                    player_name: "spotify".to_string(),
+                    position: Duration::from_micros(70),
+                },
+                MediaEvent::VolumeChanged {
+                    player_name: "spotify".to_string(),
+                    volume: 0.5,
+                }
+            ]
+        );
     }
 }

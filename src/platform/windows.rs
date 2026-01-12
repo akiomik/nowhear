@@ -492,7 +492,8 @@ mod tests {
         let watcher = WindowsMediaWatcher::with_provider(provider);
 
         let players = watcher.list_players().await?;
-        assert_eq!(players.len(), 0);
+
+        assert_eq!(players, Vec::<String>::new());
 
         Ok(())
     }
@@ -509,8 +510,8 @@ mod tests {
         let watcher = WindowsMediaWatcher::with_provider(provider);
 
         let players = watcher.list_players().await?;
-        assert_eq!(players.len(), 1);
-        assert!(players.contains(&"Spotify.exe".to_string()));
+
+        assert_eq!(players, vec!["Spotify.exe".to_string()]);
 
         Ok(())
     }
@@ -536,10 +537,13 @@ mod tests {
         );
         let watcher = WindowsMediaWatcher::with_provider(provider);
 
-        let players = watcher.list_players().await?;
-        assert_eq!(players.len(), 2);
-        assert!(players.contains(&"Spotify.exe".to_string()));
-        assert!(players.contains(&"vlc.exe".to_string()));
+        let mut players = watcher.list_players().await?;
+        players.sort();
+
+        assert_eq!(
+            players,
+            vec!["Spotify.exe".to_string(), "vlc.exe".to_string()]
+        );
 
         Ok(())
     }
@@ -556,10 +560,17 @@ mod tests {
         let watcher = WindowsMediaWatcher::with_provider(provider);
 
         let player_info = watcher.get_player("Spotify.exe").await?;
-        assert_eq!(player_info.player_name, "Spotify.exe");
-        assert_eq!(player_info.current_track, Some(track));
-        assert_eq!(player_info.playback_state, PlaybackState::Playing);
-        assert_eq!(player_info.position, Some(Duration::from_secs(10)));
+
+        assert_eq!(
+            player_info,
+            PlayerInfo {
+                player_name: "Spotify.exe".to_string(),
+                current_track: Some(track),
+                playback_state: PlaybackState::Playing,
+                position: Some(Duration::from_secs(10)),
+                volume: None,
+            }
+        );
 
         Ok(())
     }
@@ -580,7 +591,7 @@ mod tests {
     async fn test_get_player_paused_state() -> Result<()> {
         let track = create_test_track_for_windows("Paused Song");
         let state = create_test_state_for_windows(
-            track,
+            track.clone(),
             PlaybackState::Paused,
             Some(Duration::from_secs(45)),
         );
@@ -588,9 +599,17 @@ mod tests {
         let watcher = WindowsMediaWatcher::with_provider(provider);
 
         let player_info = watcher.get_player("vlc.exe").await?;
-        assert_eq!(player_info.player_name, "vlc.exe");
-        assert_eq!(player_info.playback_state, PlaybackState::Paused);
-        assert_eq!(player_info.position, Some(Duration::from_secs(45)));
+
+        assert_eq!(
+            player_info,
+            PlayerInfo {
+                player_name: "vlc.exe".to_string(),
+                current_track: Some(track),
+                playback_state: PlaybackState::Paused,
+                position: Some(Duration::from_secs(45)),
+                volume: None,
+            }
+        );
 
         Ok(())
     }
@@ -637,29 +656,6 @@ mod tests {
         );
     }
 
-    // PlayerMonitor tests
-    fn create_test_player_state(
-        title: &str,
-        playback_state: PlaybackState,
-        position: Option<Duration>,
-        volume: Option<f64>,
-    ) -> PlayerState {
-        PlayerState {
-            track: Track {
-                title: title.to_string(),
-                artist: vec!["Test Artist".to_string()],
-                album: Some("Test Album".to_string()),
-                album_artist: None,
-                track_number: None,
-                duration: Some(Duration::from_secs(180)),
-                art_url: None,
-            },
-            playback_state,
-            position,
-            volume,
-        }
-    }
-
     #[test]
     fn test_player_monitor_new() {
         let monitor = PlayerMonitor::new();
@@ -671,8 +667,9 @@ mod tests {
         let mut monitor = PlayerMonitor::new();
         let mut sessions = HashMap::new();
 
-        let state = create_test_player_state(
-            "Song 1",
+        let track = create_test_track_for_windows("Song 1");
+        let state = create_test_player_state_with_track(
+            track.clone(),
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             None,
@@ -682,10 +679,22 @@ mod tests {
         let events = monitor.process_sessions(sessions);
 
         // Should get: PlayerAdded, TrackChanged, StateChanged
-        assert_eq!(events.len(), 3);
-        assert!(matches!(events[0], MediaEvent::PlayerAdded { .. }));
-        assert!(matches!(events[1], MediaEvent::TrackChanged { .. }));
-        assert!(matches!(events[2], MediaEvent::StateChanged { .. }));
+        assert_eq!(
+            events,
+            vec![
+                MediaEvent::PlayerAdded {
+                    player_name: "Spotify.exe".to_string(),
+                },
+                MediaEvent::TrackChanged {
+                    player_name: "Spotify.exe".to_string(),
+                    track,
+                },
+                MediaEvent::StateChanged {
+                    player_name: "Spotify.exe".to_string(),
+                    state: PlaybackState::Playing,
+                }
+            ]
+        );
     }
 
     #[test]
@@ -694,8 +703,9 @@ mod tests {
 
         // Initial state
         let mut initial_sessions = HashMap::new();
+        let track1 = create_test_track_for_windows("Song 1");
         let initial_state = create_test_player_state(
-            "Song 1",
+            track1,
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             None,
@@ -705,8 +715,9 @@ mod tests {
 
         // New state with different track
         let mut new_sessions = HashMap::new();
+        let track2 = create_test_track_for_windows("Song 2");
         let new_state = create_test_player_state(
-            "Song 2",
+            track2.clone(),
             PlaybackState::Playing,
             Some(Duration::from_secs(11)),
             None,
@@ -715,9 +726,12 @@ mod tests {
         let events = monitor.process_sessions(new_sessions);
 
         // Should detect track change
-        assert_eq!(events.len(), 1);
         assert_eq!(
-            matches!(&events[0], MediaEvent::TrackChanged { player_name, track } if player_name == "Spotify.exe" && track.title == "Song 2")
+            events,
+            vec![MediaEvent::TrackChanged {
+                player_name: "Spotify.exe".to_string(),
+                track: track2
+            }]
         );
     }
 
@@ -727,8 +741,9 @@ mod tests {
 
         // Initial state
         let mut initial_sessions = HashMap::new();
+        let track = create_test_track_for_windows("Song 1");
         let initial_state = create_test_player_state(
-            "Song 1",
+            track.clone(),
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             None,
@@ -738,8 +753,9 @@ mod tests {
 
         // New state with different playback state
         let mut new_sessions = HashMap::new();
+        let track = create_test_track_for_windows("Song 1");
         let new_state = create_test_player_state(
-            "Song 1",
+            track,
             PlaybackState::Paused,
             Some(Duration::from_secs(10)),
             None,
@@ -748,9 +764,12 @@ mod tests {
         let events = monitor.process_sessions(new_sessions);
 
         // Should detect state change
-        assert_eq!(events.len(), 1);
         assert_eq!(
-            matches!(&events[0], MediaEvent::StateChanged { player_name, state } if player_name == "Spotify.exe" && *state == PlaybackState::Paused)
+            events,
+            vec![MediaEvent::StateChanged {
+                player_name: "Spotify.exe".to_string(),
+                state: PlaybackState::Paused
+            }]
         );
     }
 
@@ -760,8 +779,9 @@ mod tests {
 
         // Initial state
         let mut initial_sessions = HashMap::new();
+        let track = create_test_track_for_windows("Song 1");
         let initial_state = create_test_player_state(
-            "Song 1",
+            track.clone(),
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             None,
@@ -772,7 +792,7 @@ mod tests {
         // New state with significant position jump
         let mut new_sessions = HashMap::new();
         let new_state = create_test_player_state(
-            "Song 1",
+            track,
             PlaybackState::Playing,
             Some(Duration::from_secs(60)),
             None,
@@ -781,12 +801,13 @@ mod tests {
         let events = monitor.process_sessions(new_sessions);
 
         // Should detect position change
-        assert_eq!(events.len(), 1);
-        assert_eq!(matches!(&events[0], MediaEvent::PositionChanged {
-            player_name,
-            position,
-        } if player_name == "Spotify.exe" && *position == Duration::from_secs(60)
-        ));
+        assert_eq!(
+            events,
+            vec![MediaEvent::PositionChanged {
+                player_name: "Spotify.exe".to_string(),
+                position: Duration::from_secs(60),
+            }]
+        );
     }
 
     #[test]
@@ -795,8 +816,9 @@ mod tests {
 
         // Initial state
         let mut initial_sessions = HashMap::new();
+        let track = create_test_track_for_windows("Song 1");
         let initial_state = create_test_player_state(
-            "Song 1",
+            track.clone(),
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             None,
@@ -807,7 +829,7 @@ mod tests {
         // New state with normal 1 second progression
         let mut new_sessions = HashMap::new();
         let new_state = create_test_player_state(
-            "Song 1",
+            track,
             PlaybackState::Playing,
             Some(Duration::from_secs(11)),
             None,
@@ -816,7 +838,7 @@ mod tests {
         let events = monitor.process_sessions(new_sessions);
 
         // Should not detect position change for normal playback
-        assert_eq!(events.len(), 0);
+        assert_eq!(events, Vec::<MediaEvent>::new());
     }
 
     #[test]
@@ -825,8 +847,9 @@ mod tests {
 
         // Initial state - player running
         let mut initial_sessions = HashMap::new();
+        let track = create_test_track_for_windows("Song 1");
         let initial_state = create_test_player_state(
-            "Song 1",
+            track,
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             None,
@@ -839,10 +862,11 @@ mod tests {
         let events = monitor.process_sessions(empty_sessions);
 
         // Should detect player removal
-        assert_eq!(events.len(), 1);
         assert_eq!(
-            matches!(&events[0], MediaEvent::PlayerRemoved { player_name } if player_name == "Spotify.exe"
-            )
+            events,
+            vec![MediaEvent::PlayerRemoved {
+                player_name: "Spotify.exe".to_string()
+            }]
         );
 
         // State should be cleared
@@ -855,8 +879,9 @@ mod tests {
         let mut sessions = HashMap::new();
 
         // Add Spotify
+        let track1 = create_test_track_for_windows("Song 1");
         let spotify_state = create_test_player_state(
-            "Song 1",
+            track1,
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             None,
@@ -864,8 +889,9 @@ mod tests {
         sessions.insert("Spotify.exe".to_string(), spotify_state);
 
         // Add VLC
+        let track2 = create_test_track_for_windows("Song 2");
         let vlc_state = create_test_player_state(
-            "Song 2",
+            track2,
             PlaybackState::Playing,
             Some(Duration::from_secs(5)),
             None,
@@ -889,8 +915,9 @@ mod tests {
 
         // Initial state
         let mut initial_sessions = HashMap::new();
+        let track1 = create_test_track_for_windows("Song 1");
         let initial_state = create_test_player_state(
-            "Song 1",
+            track1,
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             None,
@@ -900,8 +927,9 @@ mod tests {
 
         // New state with multiple changes
         let mut new_sessions = HashMap::new();
+        let track2 = create_test_track_for_windows("Song 2");
         let new_state = create_test_player_state(
-            "Song 2",
+            track2.clone(),
             PlaybackState::Paused,
             Some(Duration::from_secs(60)),
             None,
@@ -910,21 +938,23 @@ mod tests {
         let events = monitor.process_sessions(new_sessions);
 
         // Should detect all changes: track, state, position
-        assert_eq!(events.len(), 3);
-
-        let has_track_change = events
-            .iter()
-            .any(|e| matches!(e, MediaEvent::TrackChanged { .. }));
-        let has_state_change = events
-            .iter()
-            .any(|e| matches!(e, MediaEvent::StateChanged { .. }));
-        let has_position_change = events
-            .iter()
-            .any(|e| matches!(e, MediaEvent::PositionChanged { .. }));
-
-        assert!(has_track_change);
-        assert!(has_state_change);
-        assert!(has_position_change);
+        assert_eq!(
+            events,
+            vec![
+                MediaEvent::TrackChanged {
+                    player_name: "Spotify.exe".to_string(),
+                    track: track2,
+                },
+                MediaEvent::StateChanged {
+                    player_name: "Spotify.exe".to_string(),
+                    state: PlaybackState::Paused,
+                },
+                MediaEvent::PositionChanged {
+                    player_name: "Spotify.exe".to_string(),
+                    position: Some(Duration::from_secs(60)),
+                },
+            ]
+        );
     }
 
     #[test]
@@ -946,6 +976,6 @@ mod tests {
         let events = monitor.process_sessions(sessions);
 
         // Should not generate any events
-        assert_eq!(events.len(), 0);
+        assert_eq!(events, Vec::<MediaEvent>::new());
     }
 }
