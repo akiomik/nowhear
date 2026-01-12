@@ -9,17 +9,133 @@ use crate::types::{MediaEvent, PlaybackState, PlayerInfo, PlayerState, Track};
 use crate::watcher::{EventStream, MediaWatcher};
 use async_trait::async_trait;
 use futures::stream::Stream;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::time;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
+/// Trait for querying player state from the underlying system.
+///
+/// This trait abstracts the mechanism for retrieving player state,
+/// allowing for dependency injection and easier testing.
+#[async_trait]
+pub trait PlayerStateProvider: Send + Sync {
+    /// Get the current state of a specific player.
+    ///
+    /// # Arguments
+    ///
+    /// * `player_name` - The name of the player (e.g., "Music" or "Spotify")
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(Some(PlayerState))` if the player is running and has state,
+    /// `Ok(None)` if the player is not running or has no state.
+    async fn get_player_state(&self, player_name: &str) -> Result<Option<PlayerState>>;
+
+    /// List all available player names.
+    ///
+    /// # Returns
+    ///
+    /// Returns a vector of player names that are currently available.
+    async fn list_available_players(&self) -> Result<Vec<String>>;
+}
+
+/// AppleScript-based player state provider for macOS.
+///
+/// This provider uses AppleScript to query the state of media players
+/// like Music.app and Spotify.
+pub struct AppleScriptProvider;
+
+#[async_trait]
+impl PlayerStateProvider for AppleScriptProvider {
+    async fn get_player_state(&self, player_name: &str) -> Result<Option<PlayerState>> {
+        match player_name {
+            "Music" => Self::get_music_app_state().await,
+            "Spotify" => Self::get_spotify_state().await,
+            _ => Err(MediaWatcherError::PlayerNotFound(player_name.to_string())),
+        }
+    }
+
+    async fn list_available_players(&self) -> Result<Vec<String>> {
+        let mut players = Vec::new();
+
+        if Self::get_music_app_state().await.ok().flatten().is_some() {
+            players.push("Music".to_string());
+        }
+
+        if Self::get_spotify_state().await.ok().flatten().is_some() {
+            players.push("Spotify".to_string());
+        }
+
+        Ok(players)
+    }
+}
+
+impl AppleScriptProvider {
+    /// Retrieves the current playback state from Music.app using AppleScript.
+    async fn get_music_app_state() -> Result<Option<PlayerState>> {
+        let script = r#"
+            if application "Music" is running then
+                tell application "Music"
+                    if player state is playing or player state is paused then
+                        set trackName to name of current track
+                        set trackArtist to artist of current track
+                        set trackAlbum to album of current track
+                        set playerState to player state as string
+                        set playerPos to player position as string
+                        set soundVol to sound volume as string
+                        return trackName & (ASCII character 9) & trackArtist & (ASCII character 9) & trackAlbum & (ASCII character 9) & playerState & (ASCII character 9) & playerPos & (ASCII character 9) & soundVol
+                    end if
+                end tell
+            end if
+            return ""
+        "#;
+
+        let output = execute_applescript(script).await?;
+        if output.is_empty() {
+            Ok(None)
+        } else {
+            Ok(parse_apple_script_output(&output))
+        }
+    }
+
+    /// Retrieves the current playback state from Spotify using AppleScript.
+    async fn get_spotify_state() -> Result<Option<PlayerState>> {
+        let script = r#"
+            if application "Spotify" is running then
+                tell application "Spotify"
+                    if player state is playing or player state is paused then
+                        set trackName to name of current track
+                        set trackArtist to artist of current track
+                        set trackAlbum to album of current track
+                        set playerState to player state as string
+                        set playerPos to player position as string
+                        set soundVol to sound volume as string
+                        return trackName & (ASCII character 9) & trackArtist & (ASCII character 9) & trackAlbum & (ASCII character 9) & playerState & (ASCII character 9) & playerPos & (ASCII character 9) & soundVol
+                    end if
+                end tell
+            end if
+            return ""
+        "#;
+
+        let output = execute_applescript(script).await?;
+        if output.is_empty() {
+            Ok(None)
+        } else {
+            Ok(parse_apple_script_output(&output))
+        }
+    }
+}
+
 /// Media watcher implementation for macOS.
 ///
-/// This watcher monitors media players on macOS by executing AppleScript commands
-/// to query the current playback state. It supports Music.app and Spotify.
-pub struct MacOSMediaWatcher;
+/// This watcher monitors media players on macOS by using a pluggable
+/// PlayerStateProvider to query the current playback state.
+pub struct MacOSMediaWatcher {
+    provider: Arc<dyn PlayerStateProvider>,
+}
 
 /// Monitors player state changes and generates events for macOS players.
 ///
@@ -158,101 +274,52 @@ impl PlayerMonitor {
 }
 
 impl MacOSMediaWatcher {
-    /// Creates a new macOS media watcher.
+    /// Creates a new macOS media watcher with the default AppleScript provider.
     ///
     /// # Returns
     ///
     /// Returns a `Result` containing the newly created watcher instance.
     pub async fn new() -> Result<Self> {
-        Ok(Self {})
+        Ok(Self {
+            provider: Arc::new(AppleScriptProvider),
+        })
     }
 
-    /// Retrieves the current playback state from Music.app using AppleScript.
+    /// Creates a new macOS media watcher with a custom provider.
     ///
-    /// This method executes an AppleScript to query Music.app for its current playback state.
-    /// The application will not be launched if it's not already running.
+    /// This constructor is primarily intended for testing purposes,
+    /// allowing injection of mock providers.
+    ///
+    /// # Arguments
+    ///
+    /// * `provider` - The player state provider to use
     ///
     /// # Returns
     ///
-    /// Returns `Ok(Some(PlayerState))` if Music.app is running and playing/paused,
-    /// `Ok(None)` if the app is not running or not playing, or an error if the query fails.
-    async fn get_music_app_state(&self) -> Result<Option<PlayerState>> {
-        let script = r#"
-            if application "Music" is running then
-                tell application "Music"
-                    if player state is playing or player state is paused then
-                        set trackName to name of current track
-                        set trackArtist to artist of current track
-                        set trackAlbum to album of current track
-                        set playerState to player state as string
-                        set playerPos to player position as string
-                        set soundVol to sound volume as string
-                        return trackName & (ASCII character 9) & trackArtist & (ASCII character 9) & trackAlbum & (ASCII character 9) & playerState & (ASCII character 9) & playerPos & (ASCII character 9) & soundVol
-                    end if
-                end tell
-            end if
-            return ""
-        "#;
-
-        let output = execute_applescript(script).await?;
-        if output.is_empty() {
-            Ok(None)
-        } else {
-            Ok(parse_apple_script_output(&output))
-        }
+    /// Returns a new watcher instance using the provided provider.
+    #[cfg(test)]
+    pub fn with_provider(provider: Arc<dyn PlayerStateProvider>) -> Self {
+        Self { provider }
     }
 
-    /// Retrieves the current playback state from Spotify using AppleScript.
-    ///
-    /// This method executes an AppleScript to query Spotify for its current playback state.
-    /// The application will not be launched if it's not already running.
-    ///
-    /// # Returns
-    ///
-    /// Returns `Ok(Some(PlayerState))` if Spotify is running and playing/paused,
-    /// `Ok(None)` if the app is not running or not playing, or an error if the query fails.
-    async fn get_spotify_state(&self) -> Result<Option<PlayerState>> {
-        let script = r#"
-            if application "Spotify" is running then
-                tell application "Spotify"
-                    if player state is playing or player state is paused then
-                        set trackName to name of current track
-                        set trackArtist to artist of current track
-                        set trackAlbum to album of current track
-                        set playerState to player state as string
-                        set playerPos to player position as string
-                        set soundVol to sound volume as string
-                        return trackName & (ASCII character 9) & trackArtist & (ASCII character 9) & trackAlbum & (ASCII character 9) & playerState & (ASCII character 9) & playerPos & (ASCII character 9) & soundVol
-                    end if
-                end tell
-            end if
-            return ""
-        "#;
-
-        let output = execute_applescript(script).await?;
-        if output.is_empty() {
-            Ok(None)
-        } else {
-            Ok(parse_apple_script_output(&output))
-        }
-    }
-
-    /// Creates an event stream using AppleScript polling.
+    /// Creates an event stream using the provided player state provider.
     ///
     /// This method creates a stream that emits `MediaEvent` items whenever media playback
     /// state changes. The implementation uses periodic polling (every 1 second) to check
-    /// the state of Music.app and Spotify.
+    /// the state of available players.
     ///
     /// # Implementation Note
     ///
     /// An implementation using `NSDistributedNotificationCenter` was considered but not adopted
     /// because it requires execution on the main thread. This polling-based approach using
-    /// AppleScript provides a simpler alternative that works in async contexts.
+    /// a pluggable provider offers a simpler alternative that works in async contexts.
     ///
     /// # Returns
     ///
     /// Returns a stream that yields `MediaEvent` items when track changes are detected.
-    fn create_event_stream_impl() -> impl Stream<Item = MediaEvent> {
+    fn create_event_stream_impl(
+        provider: Arc<dyn PlayerStateProvider>,
+    ) -> impl Stream<Item = MediaEvent> {
         let (tx, rx) = mpsc::unbounded_channel();
 
         tokio::spawn(async move {
@@ -263,8 +330,9 @@ impl MacOSMediaWatcher {
                 interval.tick().await;
 
                 // Poll both players in parallel
-                let (music_state, spotify_state) =
-                    tokio::join!(Self::poll_music_app(), Self::poll_spotify());
+                let music_future = provider.get_player_state("Music");
+                let spotify_future = provider.get_player_state("Spotify");
+                let (music_state, spotify_state) = tokio::join!(music_future, spotify_future);
 
                 // Process Music.app state
                 let music_events = monitor.process_player("Music", music_state.ok().flatten());
@@ -291,128 +359,30 @@ impl MacOSMediaWatcher {
 
         UnboundedReceiverStream::new(rx)
     }
-
-    /// Polls the current state of Music.app.
-    ///
-    /// This method queries Music.app for its current playback state without launching
-    /// the application if it's not already running.
-    ///
-    /// # Returns
-    ///
-    /// Returns `Ok(Some(PlayerState))` if Music.app is running and playing/paused,
-    /// `Ok(None)` if the app is not running or not in a playback state.
-    async fn poll_music_app() -> Result<Option<PlayerState>> {
-        let script = r#"
-            if application "Music" is running then
-                tell application "Music"
-                    if player state is playing or player state is paused then
-                        set trackName to name of current track
-                        set trackArtist to artist of current track
-                        set trackAlbum to album of current track
-                        set playerState to player state as string
-                        set playerPos to player position as string
-                        set soundVol to sound volume as string
-                        return trackName & (ASCII character 9) & trackArtist & (ASCII character 9) & trackAlbum & (ASCII character 9) & playerState & (ASCII character 9) & playerPos & (ASCII character 9) & soundVol
-                    end if
-                end tell
-            end if
-            return ""
-        "#;
-
-        let output = execute_applescript(script).await?;
-        if output.is_empty() {
-            Ok(None)
-        } else {
-            Ok(parse_apple_script_output(&output))
-        }
-    }
-
-    /// Polls the current state of Spotify.
-    ///
-    /// This method queries Spotify for its current playback state without launching
-    /// the application if it's not already running.
-    ///
-    /// # Returns
-    ///
-    /// Returns `Ok(Some(PlayerState))` if Spotify is running and playing/paused,
-    /// `Ok(None)` if the app is not running or not in a playback state.
-    async fn poll_spotify() -> Result<Option<PlayerState>> {
-        let script = r#"
-            if application "Spotify" is running then
-                tell application "Spotify"
-                    if player state is playing or player state is paused then
-                        set trackName to name of current track
-                        set trackArtist to artist of current track
-                        set trackAlbum to album of current track
-                        set playerState to player state as string
-                        set playerPos to player position as string
-                        set soundVol to sound volume as string
-                        return trackName & (ASCII character 9) & trackArtist & (ASCII character 9) & trackAlbum & (ASCII character 9) & playerState & (ASCII character 9) & playerPos & (ASCII character 9) & soundVol
-                    end if
-                end tell
-            end if
-            return ""
-        "#;
-
-        let output = execute_applescript(script).await?;
-        if output.is_empty() {
-            Ok(None)
-        } else {
-            Ok(parse_apple_script_output(&output))
-        }
-    }
 }
 
 #[async_trait]
 impl MediaWatcher for MacOSMediaWatcher {
     async fn list_players(&self) -> Result<Vec<String>> {
-        let mut players = Vec::new();
-
-        if self.get_music_app_state().await.ok().flatten().is_some() {
-            players.push("Music".to_string());
-        }
-
-        if self.get_spotify_state().await.ok().flatten().is_some() {
-            players.push("Spotify".to_string());
-        }
-
-        Ok(players)
+        self.provider.list_available_players().await
     }
 
     async fn get_player(&self, player_name: &str) -> Result<PlayerInfo> {
-        match player_name {
-            "Music" => {
-                if let Some(player_state) = self.get_music_app_state().await? {
-                    Ok(PlayerInfo {
-                        player_name: "Music".to_string(),
-                        current_track: Some(player_state.track),
-                        playback_state: player_state.playback_state,
-                        position: player_state.position,
-                        volume: player_state.volume,
-                    })
-                } else {
-                    Ok(PlayerInfo::empty("Music"))
-                }
-            }
-            "Spotify" => {
-                if let Some(player_state) = self.get_spotify_state().await? {
-                    Ok(PlayerInfo {
-                        player_name: "Spotify".to_string(),
-                        current_track: Some(player_state.track),
-                        playback_state: player_state.playback_state,
-                        position: player_state.position,
-                        volume: player_state.volume,
-                    })
-                } else {
-                    Ok(PlayerInfo::empty("Spotify"))
-                }
-            }
-            _ => Err(MediaWatcherError::PlayerNotFound(player_name.to_string())),
+        if let Some(player_state) = self.provider.get_player_state(player_name).await? {
+            Ok(PlayerInfo {
+                player_name: player_name.to_string(),
+                current_track: Some(player_state.track),
+                playback_state: player_state.playback_state,
+                position: player_state.position,
+                volume: player_state.volume,
+            })
+        } else {
+            Ok(PlayerInfo::empty(player_name))
         }
     }
 
     async fn event_stream(&self) -> Result<EventStream> {
-        let stream = Self::create_event_stream_impl();
+        let stream = Self::create_event_stream_impl(Arc::clone(&self.provider));
         Ok(Box::pin(stream))
     }
 }
@@ -521,6 +491,180 @@ fn parse_apple_script_output(output: &str) -> Option<PlayerState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    /// Mock player state provider for testing.
+    ///
+    /// This provider returns predefined player states without executing
+    /// any system commands, making tests fast and deterministic.
+    struct MockPlayerStateProvider {
+        states: HashMap<String, Option<PlayerState>>,
+    }
+
+    impl MockPlayerStateProvider {
+        fn new() -> Self {
+            Self {
+                states: HashMap::new(),
+            }
+        }
+
+        fn with_player(mut self, player_name: &str, state: Option<PlayerState>) -> Self {
+            self.states.insert(player_name.to_string(), state);
+            self
+        }
+    }
+
+    #[async_trait]
+    impl PlayerStateProvider for MockPlayerStateProvider {
+        async fn get_player_state(&self, player_name: &str) -> Result<Option<PlayerState>> {
+            Ok(self.states.get(player_name).cloned().flatten())
+        }
+
+        async fn list_available_players(&self) -> Result<Vec<String>> {
+            let players: Vec<String> = self
+                .states
+                .iter()
+                .filter_map(|(name, state)| {
+                    if state.is_some() {
+                        Some(name.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            Ok(players)
+        }
+    }
+
+    fn create_test_track(title: &str) -> Track {
+        Track {
+            title: title.to_string(),
+            artist: vec!["Test Artist".to_string()],
+            album: Some("Test Album".to_string()),
+            album_artist: None,
+            track_number: None,
+            duration: Some(Duration::from_secs(180)),
+            art_url: None,
+        }
+    }
+
+    fn create_test_player_state_with_track(
+        track: Track,
+        playback_state: PlaybackState,
+        position: Option<Duration>,
+        volume: Option<f64>,
+    ) -> PlayerState {
+        PlayerState {
+            track,
+            playback_state,
+            position,
+            volume,
+        }
+    }
+
+    // MacOSMediaWatcher tests with mock provider
+
+    #[tokio::test]
+    async fn test_list_players_with_no_players() {
+        let provider = Arc::new(MockPlayerStateProvider::new());
+        let watcher = MacOSMediaWatcher::with_provider(provider);
+
+        let players = watcher.list_players().await.unwrap();
+        assert_eq!(players.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_list_players_with_music_only() {
+        let state = create_test_player_state_with_track(
+            create_test_track("Test Song"),
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+            Some(0.8),
+        );
+        let provider = Arc::new(MockPlayerStateProvider::new().with_player("Music", Some(state)));
+        let watcher = MacOSMediaWatcher::with_provider(provider);
+
+        let players = watcher.list_players().await.unwrap();
+        assert_eq!(players.len(), 1);
+        assert!(players.contains(&"Music".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_list_players_with_both_players() {
+        let music_state = create_test_player_state_with_track(
+            create_test_track("Music Song"),
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+            Some(0.8),
+        );
+        let spotify_state = create_test_player_state_with_track(
+            create_test_track("Spotify Song"),
+            PlaybackState::Playing,
+            Some(Duration::from_secs(5)),
+            Some(0.7),
+        );
+        let provider = Arc::new(
+            MockPlayerStateProvider::new()
+                .with_player("Music", Some(music_state))
+                .with_player("Spotify", Some(spotify_state)),
+        );
+        let watcher = MacOSMediaWatcher::with_provider(provider);
+
+        let players = watcher.list_players().await.unwrap();
+        assert_eq!(players.len(), 2);
+        assert!(players.contains(&"Music".to_string()));
+        assert!(players.contains(&"Spotify".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_get_player_with_active_player() {
+        let state = create_test_player_state_with_track(
+            create_test_track("Test Song"),
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+            Some(0.8),
+        );
+        let provider = Arc::new(MockPlayerStateProvider::new().with_player("Music", Some(state)));
+        let watcher = MacOSMediaWatcher::with_provider(provider);
+
+        let player_info = watcher.get_player("Music").await.unwrap();
+        assert_eq!(player_info.player_name, "Music");
+        assert!(player_info.current_track.is_some());
+        assert_eq!(player_info.current_track.unwrap().title, "Test Song");
+        assert_eq!(player_info.playback_state, PlaybackState::Playing);
+        assert_eq!(player_info.position, Some(Duration::from_secs(10)));
+        assert_eq!(player_info.volume, Some(0.8));
+    }
+
+    #[tokio::test]
+    async fn test_get_player_with_inactive_player() {
+        let provider = Arc::new(MockPlayerStateProvider::new().with_player("Music", None));
+        let watcher = MacOSMediaWatcher::with_provider(provider);
+
+        let player_info = watcher.get_player("Music").await.unwrap();
+        assert_eq!(player_info.player_name, "Music");
+        assert!(player_info.current_track.is_none());
+        assert_eq!(player_info.playback_state, PlaybackState::Stopped);
+    }
+
+    #[tokio::test]
+    async fn test_get_player_paused_state() {
+        let state = create_test_player_state_with_track(
+            create_test_track("Paused Song"),
+            PlaybackState::Paused,
+            Some(Duration::from_secs(30)),
+            Some(0.5),
+        );
+        let provider = Arc::new(MockPlayerStateProvider::new().with_player("Spotify", Some(state)));
+        let watcher = MacOSMediaWatcher::with_provider(provider);
+
+        let player_info = watcher.get_player("Spotify").await.unwrap();
+        assert_eq!(player_info.player_name, "Spotify");
+        assert_eq!(player_info.playback_state, PlaybackState::Paused);
+        assert_eq!(player_info.position, Some(Duration::from_secs(30)));
+    }
+
+    // AppleScript parsing tests
 
     #[test]
     fn test_parse_applescript_output_with_full_info() {
