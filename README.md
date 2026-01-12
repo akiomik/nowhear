@@ -4,6 +4,7 @@
 [![Crates.io](https://img.shields.io/crates/v/nowhear.svg)](https://crates.io/crates/nowhear)
 [![Documentation](https://docs.rs/nowhear/badge.svg)](https://docs.rs/nowhear)
 [![License](https://img.shields.io/crates/l/nowhear.svg)](https://github.com/akiomik/nowhear/blob/main/LICENSE)
+[![codecov](https://codecov.io/gh/akiomik/nowhear/graph/badge.svg?token=GU40650KX6)](https://codecov.io/gh/akiomik/nowhear)
 
 Cross-platform library for monitoring media playback information in Rust.
 
