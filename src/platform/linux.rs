@@ -372,10 +372,12 @@ impl PlayerMonitor {
         match self.last_states.get(player_name) {
             Some(last) => {
                 // Check for track changes
-                if current.track != last.track && current.track.is_some() {
+                if current.track != last.track
+                    && let Some(current_track) = current.track
+                {
                     events.push(MediaEvent::TrackChanged {
                         player_name: player_name.to_string(),
-                        track: current.track.clone().unwrap(),
+                        track: current_track,
                     });
                 }
 
@@ -391,10 +393,12 @@ impl PlayerMonitor {
                 Self::detect_position_change(player_name, current, last, events);
 
                 // Check for volume changes
-                if current.volume != last.volume && current.volume.is_some() {
+                if current.volume != last.volume
+                    && let Some(volume) = current.volume
+                {
                     events.push(MediaEvent::VolumeChanged {
                         player_name: player_name.to_string(),
-                        volume: current.volume.unwrap(),
+                        volume,
                     });
                 }
             }
@@ -599,16 +603,18 @@ mod tests {
     // LinuxMediaWatcher tests with mock provider
 
     #[tokio::test]
-    async fn test_list_players_with_no_players() {
+    async fn test_list_players_with_no_players() -> Result<()> {
         let provider = Arc::new(MockPlayerDiscoveryProvider::new());
         let watcher = LinuxMediaWatcher::with_provider(provider);
 
-        let players = watcher.list_players().await.unwrap();
+        let players = watcher.list_players().await?;
         assert_eq!(players.len(), 0);
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_list_players_with_single_player() {
+    async fn test_list_players_with_single_player() -> Result<()> {
         let info = create_test_player_info(
             "spotify",
             Some(create_test_track_for_linux("Test Song")),
@@ -619,13 +625,15 @@ mod tests {
         let provider = Arc::new(MockPlayerDiscoveryProvider::new().with_player("spotify", info));
         let watcher = LinuxMediaWatcher::with_provider(provider);
 
-        let players = watcher.list_players().await.unwrap();
+        let players = watcher.list_players().await?;
         assert_eq!(players.len(), 1);
         assert!(players.contains(&"spotify".to_string()));
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_list_players_with_multiple_players() {
+    async fn test_list_players_with_multiple_players() -> Result<()> {
         let spotify_info = create_test_player_info(
             "spotify",
             Some(create_test_track_for_linux("Spotify Song")),
@@ -647,17 +655,20 @@ mod tests {
         );
         let watcher = LinuxMediaWatcher::with_provider(provider);
 
-        let players = watcher.list_players().await.unwrap();
+        let players = watcher.list_players().await?;
         assert_eq!(players.len(), 2);
         assert!(players.contains(&"spotify".to_string()));
         assert!(players.contains(&"vlc".to_string()));
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_get_player_with_active_player() {
+    async fn test_get_player_with_active_player() -> Result<()> {
+        let track = create_test_track_for_linux("Test Song");
         let info = create_test_player_info(
             "spotify",
-            Some(create_test_track_for_linux("Test Song")),
+            Some(track.clone()),
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             Some(0.8),
@@ -665,13 +676,14 @@ mod tests {
         let provider = Arc::new(MockPlayerDiscoveryProvider::new().with_player("spotify", info));
         let watcher = LinuxMediaWatcher::with_provider(provider);
 
-        let player_info = watcher.get_player("spotify").await.unwrap();
+        let player_info = watcher.get_player("spotify").await?;
         assert_eq!(player_info.player_name, "spotify");
-        assert!(player_info.current_track.is_some());
-        assert_eq!(player_info.current_track.unwrap().title, "Test Song");
+        assert_eq!(player_info.current_track, Some(track));
         assert_eq!(player_info.playback_state, PlaybackState::Playing);
         assert_eq!(player_info.position, Some(Duration::from_secs(10)));
         assert_eq!(player_info.volume, Some(0.8));
+
+        Ok(())
     }
 
     #[tokio::test]
@@ -689,7 +701,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_player_paused_state() {
+    async fn test_get_player_paused_state() -> Result<()> {
         let info = create_test_player_info(
             "vlc",
             Some(create_test_track_for_linux("Paused Song")),
@@ -700,10 +712,12 @@ mod tests {
         let provider = Arc::new(MockPlayerDiscoveryProvider::new().with_player("vlc", info));
         let watcher = LinuxMediaWatcher::with_provider(provider);
 
-        let player_info = watcher.get_player("vlc").await.unwrap();
+        let player_info = watcher.get_player("vlc").await?;
         assert_eq!(player_info.player_name, "vlc");
         assert_eq!(player_info.playback_state, PlaybackState::Paused);
         assert_eq!(player_info.position, Some(Duration::from_secs(45)));
+
+        Ok(())
     }
 
     // Helper function to create Metadata for testing

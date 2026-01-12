@@ -472,12 +472,12 @@ mod tests {
     }
 
     fn create_test_state_for_windows(
-        title: &str,
+        track: Track,
         playback_state: PlaybackState,
         position: Option<Duration>,
     ) -> PlayerState {
         PlayerState {
-            track: create_test_track_for_windows(title),
+            track,
             playback_state,
             position,
             volume: None,
@@ -487,38 +487,45 @@ mod tests {
     // WindowsMediaWatcher tests with mock provider
 
     #[tokio::test]
-    async fn test_list_players_with_no_sessions() {
+    async fn test_list_players_with_no_sessions() -> Result<()> {
         let provider = Arc::new(MockMediaSessionProvider::new());
         let watcher = WindowsMediaWatcher::with_provider(provider);
 
-        let players = watcher.list_players().await.unwrap();
+        let players = watcher.list_players().await?;
         assert_eq!(players.len(), 0);
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_list_players_with_single_session() {
+    async fn test_list_players_with_single_session() -> Result<()> {
+        let track = create_test_track_for_windows("Test Song");
         let state = create_test_state_for_windows(
-            "Test Song",
+            track,
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
         );
         let provider = Arc::new(MockMediaSessionProvider::new().with_session("Spotify.exe", state));
         let watcher = WindowsMediaWatcher::with_provider(provider);
 
-        let players = watcher.list_players().await.unwrap();
+        let players = watcher.list_players().await?;
         assert_eq!(players.len(), 1);
         assert!(players.contains(&"Spotify.exe".to_string()));
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_list_players_with_multiple_sessions() {
+    async fn test_list_players_with_multiple_sessions() -> Result<()> {
+        let spotify_track = create_test_track_for_windows("Spotify Song");
         let spotify_state = create_test_state_for_windows(
-            "Spotify Song",
+            "",
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
         );
+        let vlc_track = create_test_track_for_windows("VLC Song");
         let vlc_state = create_test_state_for_windows(
-            "VLC Song",
+            vlc_track,
             PlaybackState::Paused,
             Some(Duration::from_secs(30)),
         );
@@ -529,28 +536,32 @@ mod tests {
         );
         let watcher = WindowsMediaWatcher::with_provider(provider);
 
-        let players = watcher.list_players().await.unwrap();
+        let players = watcher.list_players().await?;
         assert_eq!(players.len(), 2);
         assert!(players.contains(&"Spotify.exe".to_string()));
         assert!(players.contains(&"vlc.exe".to_string()));
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_get_player_with_active_session() {
+    async fn test_get_player_with_active_session() -> Result<()> {
+        let track = create_test_track_for_windows("Test Song");
         let state = create_test_state_for_windows(
-            "Test Song",
+            track.clone(),
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
         );
         let provider = Arc::new(MockMediaSessionProvider::new().with_session("Spotify.exe", state));
         let watcher = WindowsMediaWatcher::with_provider(provider);
 
-        let player_info = watcher.get_player("Spotify.exe").await.unwrap();
+        let player_info = watcher.get_player("Spotify.exe").await?;
         assert_eq!(player_info.player_name, "Spotify.exe");
-        assert!(player_info.current_track.is_some());
-        assert_eq!(player_info.current_track.unwrap().title, "Test Song");
+        assert_eq!(player_info.current_track, Some(track));
         assert_eq!(player_info.playback_state, PlaybackState::Playing);
         assert_eq!(player_info.position, Some(Duration::from_secs(10)));
+
+        Ok(())
     }
 
     #[tokio::test]
@@ -568,19 +579,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_player_paused_state() {
+    async fn test_get_player_paused_state() -> Result<()> {
+        let track = create_test_track_for_windows("Paused Song");
         let state = create_test_state_for_windows(
-            "Paused Song",
+            track,
             PlaybackState::Paused,
             Some(Duration::from_secs(45)),
         );
         let provider = Arc::new(MockMediaSessionProvider::new().with_session("vlc.exe", state));
         let watcher = WindowsMediaWatcher::with_provider(provider);
 
-        let player_info = watcher.get_player("vlc.exe").await.unwrap();
+        let player_info = watcher.get_player("vlc.exe").await?;
         assert_eq!(player_info.player_name, "vlc.exe");
         assert_eq!(player_info.playback_state, PlaybackState::Paused);
         assert_eq!(player_info.position, Some(Duration::from_secs(45)));
+
+        Ok(())
     }
 
     // Playback status parsing tests

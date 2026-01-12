@@ -498,16 +498,18 @@ mod tests {
     // MacOSMediaWatcher tests with mock provider
 
     #[tokio::test]
-    async fn test_list_players_with_no_players() {
+    async fn test_list_players_with_no_players() -> Result<()> {
         let provider = Arc::new(MockPlayerStateProvider::new());
         let watcher = MacOSMediaWatcher::with_provider(provider);
 
-        let players = watcher.list_players().await.unwrap();
+        let players = watcher.list_players().await?;
         assert_eq!(players.len(), 0);
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_list_players_with_music_only() {
+    async fn test_list_players_with_music_only() -> Result<()> {
         let state = create_test_player_state_with_track(
             create_test_track("Test Song"),
             PlaybackState::Playing,
@@ -517,13 +519,15 @@ mod tests {
         let provider = Arc::new(MockPlayerStateProvider::new().with_player("Music", Some(state)));
         let watcher = MacOSMediaWatcher::with_provider(provider);
 
-        let players = watcher.list_players().await.unwrap();
+        let players = watcher.list_players().await?;
         assert_eq!(players.len(), 1);
         assert!(players.contains(&"Music".to_string()));
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_list_players_with_both_players() {
+    async fn test_list_players_with_both_players() -> Result<()> {
         let music_state = create_test_player_state_with_track(
             create_test_track("Music Song"),
             PlaybackState::Playing,
@@ -543,16 +547,19 @@ mod tests {
         );
         let watcher = MacOSMediaWatcher::with_provider(provider);
 
-        let players = watcher.list_players().await.unwrap();
+        let players = watcher.list_players().await?;
         assert_eq!(players.len(), 2);
         assert!(players.contains(&"Music".to_string()));
         assert!(players.contains(&"Spotify".to_string()));
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_get_player_with_active_player() {
+    async fn test_get_player_with_active_player() -> Result<()> {
+        let track = create_test_track("Test Song");
         let state = create_test_player_state_with_track(
-            create_test_track("Test Song"),
+            track.clone(),
             PlaybackState::Playing,
             Some(Duration::from_secs(10)),
             Some(0.8),
@@ -560,28 +567,31 @@ mod tests {
         let provider = Arc::new(MockPlayerStateProvider::new().with_player("Music", Some(state)));
         let watcher = MacOSMediaWatcher::with_provider(provider);
 
-        let player_info = watcher.get_player("Music").await.unwrap();
+        let player_info = watcher.get_player("Music").await?;
         assert_eq!(player_info.player_name, "Music");
-        assert!(player_info.current_track.is_some());
-        assert_eq!(player_info.current_track.unwrap().title, "Test Song");
+        assert_eq!(player_info.current_track, Some(track));
         assert_eq!(player_info.playback_state, PlaybackState::Playing);
         assert_eq!(player_info.position, Some(Duration::from_secs(10)));
         assert_eq!(player_info.volume, Some(0.8));
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_get_player_with_inactive_player() {
+    async fn test_get_player_with_inactive_player() -> Result<()> {
         let provider = Arc::new(MockPlayerStateProvider::new().with_player("Music", None));
         let watcher = MacOSMediaWatcher::with_provider(provider);
 
-        let player_info = watcher.get_player("Music").await.unwrap();
+        let player_info = watcher.get_player("Music").await?;
         assert_eq!(player_info.player_name, "Music");
-        assert!(player_info.current_track.is_none());
+        assert_eq!(player_info.current_track, None);
         assert_eq!(player_info.playback_state, PlaybackState::Stopped);
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_get_player_paused_state() {
+    async fn test_get_player_paused_state() -> Result<()> {
         let state = create_test_player_state_with_track(
             create_test_track("Paused Song"),
             PlaybackState::Paused,
@@ -591,10 +601,12 @@ mod tests {
         let provider = Arc::new(MockPlayerStateProvider::new().with_player("Spotify", Some(state)));
         let watcher = MacOSMediaWatcher::with_provider(provider);
 
-        let player_info = watcher.get_player("Spotify").await.unwrap();
+        let player_info = watcher.get_player("Spotify").await?;
         assert_eq!(player_info.player_name, "Spotify");
         assert_eq!(player_info.playback_state, PlaybackState::Paused);
         assert_eq!(player_info.position, Some(Duration::from_secs(30)));
+
+        Ok(())
     }
 
     // AppleScript parsing tests
@@ -602,10 +614,8 @@ mod tests {
     #[test]
     fn test_parse_applescript_output_with_full_info() {
         let output = "Bohemian Rhapsody\tQueen\tA Night at the Opera\tplaying\t123.45\t75";
-        let result = parse_apple_script_output(output);
+        let player_state = parse_apple_script_output(output).expect("should success");
 
-        assert!(result.is_some());
-        let player_state = result.unwrap();
         assert_eq!(player_state.track.title, "Bohemian Rhapsody");
         assert_eq!(player_state.track.artist, vec!["Queen"]);
         assert_eq!(
@@ -624,10 +634,8 @@ mod tests {
     #[test]
     fn test_parse_applescript_output_with_empty_album() {
         let output = "Test Song\tTest Artist\t\tplaying\t0\t100";
-        let result = parse_apple_script_output(output);
+        let player_state = parse_apple_script_output(output).expect("should success");
 
-        assert!(result.is_some());
-        let player_state = result.unwrap();
         assert_eq!(player_state.track.title, "Test Song");
         assert_eq!(player_state.track.artist, vec!["Test Artist"]);
         assert_eq!(player_state.track.album, None);
@@ -639,10 +647,8 @@ mod tests {
     #[test]
     fn test_parse_applescript_output_with_paused_state() {
         let output = "Some Track\tSome Artist\tSome Album\tpaused\t60.5\t50";
-        let result = parse_apple_script_output(output);
+        let player_state = parse_apple_script_output(output).expect("should success");
 
-        assert!(result.is_some());
-        let player_state = result.unwrap();
         assert_eq!(player_state.track.title, "Some Track");
         assert_eq!(player_state.track.artist, vec!["Some Artist"]);
         assert_eq!(player_state.track.album, Some("Some Album".to_string()));
@@ -654,10 +660,8 @@ mod tests {
     #[test]
     fn test_parse_applescript_output_with_special_characters() {
         let output = "Song & Title (Remix)\tArtist: Name\tAlbum - Edition\tplaying\t30\t80";
-        let result = parse_apple_script_output(output);
+        let player_state = parse_apple_script_output(output).expect("should success");
 
-        assert!(result.is_some());
-        let player_state = result.unwrap();
         assert_eq!(player_state.track.title, "Song & Title (Remix)");
         assert_eq!(player_state.track.artist, vec!["Artist: Name"]);
         assert_eq!(
@@ -670,10 +674,8 @@ mod tests {
     #[test]
     fn test_parse_applescript_output_with_unicode() {
         let output = "春よ、来い\t松任谷由実\tThe Dancing Sun\tplaying\t120\t65";
-        let result = parse_apple_script_output(output);
+        let player_state = parse_apple_script_output(output).expect("should success");
 
-        assert!(result.is_some());
-        let player_state = result.unwrap();
         assert_eq!(player_state.track.title, "春よ、来い");
         assert_eq!(player_state.track.artist, vec!["松任谷由実"]);
         assert_eq!(
@@ -688,7 +690,7 @@ mod tests {
         let output = "Only Title\tOnly Artist";
         let result = parse_apple_script_output(output);
 
-        assert!(result.is_none());
+        assert_eq!(result, None);
     }
 
     #[test]
@@ -696,7 +698,7 @@ mod tests {
         let output = "";
         let result = parse_apple_script_output(output);
 
-        assert!(result.is_none());
+        assert_eq!(result, None);
     }
 
     #[test]
@@ -704,17 +706,15 @@ mod tests {
         let output = "Just a title";
         let result = parse_apple_script_output(output);
 
-        assert!(result.is_none());
+        assert_eq!(result, None);
     }
 
     #[test]
     fn test_parse_applescript_output_without_position_volume() {
         // Test when only 4 fields are provided (no position and volume)
         let output = "Title\tArtist\tAlbum\tplaying";
-        let result = parse_apple_script_output(output);
+        let player_state = parse_apple_script_output(output).expect("should success");
 
-        assert!(result.is_some());
-        let player_state = result.unwrap();
         assert_eq!(player_state.track.title, "Title");
         assert_eq!(player_state.track.artist, vec!["Artist"]);
         assert_eq!(player_state.track.album, Some("Album".to_string()));
@@ -726,10 +726,8 @@ mod tests {
     #[test]
     fn test_parse_applescript_output_with_whitespace() {
         let output = "  Trimmed Title  \t  Trimmed Artist  \t  Trimmed Album  \tplaying\t10\t90";
-        let result = parse_apple_script_output(output);
+        let player_state = parse_apple_script_output(output).expect("should success");
 
-        assert!(result.is_some());
-        let player_state = result.unwrap();
         // Note: The function doesn't trim individual fields, it preserves whitespace
         assert_eq!(player_state.track.title, "  Trimmed Title  ");
         assert_eq!(player_state.track.artist, vec!["  Trimmed Artist  "]);
@@ -744,10 +742,8 @@ mod tests {
     fn test_parse_applescript_output_without_state() {
         // Test when only 3 fields are provided (no player state)
         let output = "Title\tArtist\tAlbum";
-        let result = parse_apple_script_output(output);
+        let player_state = parse_apple_script_output(output).expect("should success");
 
-        assert!(result.is_some());
-        let player_state = result.unwrap();
         assert_eq!(player_state.track.title, "Title");
         assert_eq!(player_state.track.artist, vec!["Artist"]);
         assert_eq!(player_state.track.album, Some("Album".to_string()));
@@ -761,20 +757,16 @@ mod tests {
     fn test_parse_applescript_output_with_uppercase_state() {
         // Test case insensitivity
         let output = "Title\tArtist\tAlbum\tPLAYING\t45\t55";
-        let result = parse_apple_script_output(output);
+        let player_state = parse_apple_script_output(output).expect("should success");
 
-        assert!(result.is_some());
-        let player_state = result.unwrap();
         assert_eq!(player_state.playback_state, PlaybackState::Playing);
     }
 
     #[test]
     fn test_parse_applescript_output_with_stopped_state() {
         let output = "Title\tArtist\tAlbum\tstopped\t0\t0";
-        let result = parse_apple_script_output(output);
+        let player_state = parse_apple_script_output(output).expect("should success");
 
-        assert!(result.is_some());
-        let player_state = result.unwrap();
         assert_eq!(player_state.playback_state, PlaybackState::Stopped);
     }
 
@@ -782,10 +774,8 @@ mod tests {
     fn test_parse_applescript_output_with_unknown_state() {
         // Test unknown state defaults to Playing
         let output = "Title\tArtist\tAlbum\tunknown\t0\t0";
-        let result = parse_apple_script_output(output);
+        let player_state = parse_apple_script_output(output).expect("should success");
 
-        assert!(result.is_some());
-        let player_state = result.unwrap();
         assert_eq!(player_state.playback_state, PlaybackState::Playing);
     }
 
