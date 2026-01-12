@@ -184,7 +184,7 @@ impl MediaWatcherBuilder {
         #[cfg(target_os = "macos")]
         {
             Ok(PlatformMediaWatcher::MacOS(
-                crate::platform::macos::MacOSMediaWatcher::new()?,
+                crate::platform::macos::MacOSMediaWatcher::new(),
             ))
         }
 

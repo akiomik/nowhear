@@ -264,10 +264,10 @@ impl MacOSMediaWatcher<AppleScriptProvider> {
     ///
     /// Note: This is an internal API. Use `MediaWatcherBuilder` instead.
     #[doc(hidden)]
-    pub fn new() -> Result<Self> {
-        Ok(Self {
+    pub fn new() -> Self {
+        Self {
             provider: Arc::new(AppleScriptProvider),
-        })
+        }
     }
 }
 
