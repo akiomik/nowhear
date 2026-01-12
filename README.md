@@ -1,5 +1,6 @@
 # nowhear
 
+[![CI](https://github.com/akiomik/nowhear/actions/workflows/ci.yml/badge.svg)](https://github.com/akiomik/nowhear/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/nowhear.svg)](https://crates.io/crates/nowhear)
 [![Documentation](https://docs.rs/nowhear/badge.svg)](https://docs.rs/nowhear)
 [![License](https://img.shields.io/crates/l/nowhear.svg)](https://github.com/akiomik/nowhear/blob/main/LICENSE)
