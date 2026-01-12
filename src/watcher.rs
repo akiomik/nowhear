@@ -174,6 +174,7 @@ impl MediaWatcherBuilder {
     /// Returns `MediaWatcherError::UnsupportedPlatform` if the current platform
     /// is not supported, or `MediaWatcherError::ConnectionError` if the platform-specific
     /// initialization fails.
+    #[allow(clippy::unused_async)]
     pub async fn build(self) -> Result<PlatformMediaWatcher> {
         #[cfg(target_os = "linux")]
         {
