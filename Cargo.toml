@@ -10,6 +10,13 @@ readme = "README.md"
 license = "Apache-2.0"
 keywords = ["media", "music", "playback", "mpris", "nowplaying"]
 categories = ["multimedia", "os"]
+include = [
+  "examples",
+  "src",
+  "CHANGELOG.md",
+  "LICENSE",
+  "README.md",
+]
 
 [dependencies]
 futures = "0.3"
