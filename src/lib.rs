@@ -16,12 +16,12 @@
 //! ### Listing Players
 //!
 //! ```no_run
-//! use nowhear::{MediaWatcher, MediaWatcherBuilder, Result};
+//! use nowhear::{MediaSource, MediaSourceBuilder, Result};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<()> {
-//!     let watcher = MediaWatcherBuilder::new().build().await?;
-//!     let players = watcher.list_players().await?;
+//!     let source = MediaSourceBuilder::new().build().await?;
+//!     let players = source.list_players().await?;
 //!     println!("Available players: {:?}", players);
 //!     Ok(())
 //! }
@@ -30,12 +30,12 @@
 //! ### Getting Player Information
 //!
 //! ```no_run
-//! use nowhear::{MediaWatcher, MediaWatcherBuilder, Result};
+//! use nowhear::{MediaSource, MediaSourceBuilder, Result};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<()> {
-//!     let watcher = MediaWatcherBuilder::new().build().await?;
-//!     let player_info = watcher.get_player("spotify").await?;
+//!     let source = MediaSourceBuilder::new().build().await?;
+//!     let player_info = source.get_player("spotify").await?;
 //!
 //!     if let Some(track) = player_info.current_track {
 //!         println!("Now playing: {} by {}", track.title, track.artist.join(", "));
@@ -48,13 +48,13 @@
 //! ### Subscribing to Events
 //!
 //! ```no_run
-//! use nowhear::{MediaWatcher, MediaWatcherBuilder, Result};
+//! use nowhear::{MediaSource, MediaSourceBuilder, Result};
 //! use futures::StreamExt;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<()> {
-//!     let watcher = MediaWatcherBuilder::new().build().await?;
-//!     let mut stream = watcher.event_stream().await?;
+//!     let source = MediaSourceBuilder::new().build().await?;
+//!     let mut stream = source.event_stream().await?;
 //!
 //!     while let Some(event) = stream.next().await {
 //!         println!("Event: {:?}", event);
@@ -65,15 +65,15 @@
 //! ```
 
 pub mod error;
+pub mod source;
 pub mod types;
-pub mod watcher;
 
 mod platform;
 
 // Re-export main types
-pub use error::{MediaWatcherError, Result};
+pub use error::{MediaSourceError, Result};
+pub use source::{MediaSource, MediaSourceBuilder};
 pub use types::{MediaEvent, PlaybackState, PlayerInfo, Track};
-pub use watcher::{MediaWatcher, MediaWatcherBuilder};
 
 #[cfg(test)]
 mod tests {

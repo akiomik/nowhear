@@ -1,4 +1,4 @@
-//! Error types for media watcher operations.
+//! Error types for media source operations.
 //!
 //! This module defines the error types that can occur when interacting with
 //! media players across different platforms.
@@ -7,9 +7,9 @@ use std::result;
 
 use thiserror::Error;
 
-/// Errors that can occur when using the media watcher.
+/// Errors that can occur when using the media source.
 #[derive(Error, Debug, PartialEq, Eq)]
-pub enum MediaWatcherError {
+pub enum MediaSourceError {
     /// The requested player was not found or is not currently running.
     #[error("Player not found: {0}")]
     PlayerNotFound(String),
@@ -31,9 +31,9 @@ pub enum MediaWatcherError {
     InternalError(String),
 }
 
-/// Result type alias for media watcher operations.
+/// Result type alias for media source operations.
 ///
-/// This is a convenience type alias that uses [`MediaWatcherError`] as the error type.
+/// This is a convenience type alias that uses [`MediaSourceError`] as the error type.
 /// Most functions in this crate return this type.
 ///
 /// # Examples
@@ -45,4 +45,4 @@ pub enum MediaWatcherError {
 ///     Ok("success".to_string())
 /// }
 /// ```
-pub type Result<T> = result::Result<T, MediaWatcherError>;
+pub type Result<T> = result::Result<T, MediaSourceError>;
