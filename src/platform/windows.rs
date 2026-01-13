@@ -18,9 +18,9 @@ use windows::Media::Control::{
 };
 use windows::core::Interface;
 
-use crate::error::{MediaWatcherError, Result};
+use crate::error::{MediaSourceError, Result};
+use crate::source::{EventStream, MediaSource};
 use crate::types::{MediaEvent, PlaybackState, PlayerInfo, Track};
-use crate::watcher::{EventStream, MediaWatcher};
 
 /// Internal player state representation for Windows implementation.
 ///
@@ -57,11 +57,11 @@ impl WindowsMediaControlProvider {
     pub async fn new() -> Result<Self> {
         let manager = SessionManager::RequestAsync()
             .map_err(|e| {
-                MediaWatcherError::ConnectionError(format!("Failed to get session manager: {e}"))
+                MediaSourceError::ConnectionError(format!("Failed to get session manager: {e}"))
             })?
             .await
             .map_err(|e| {
-                MediaWatcherError::ConnectionError(format!("Failed to await session manager: {e}"))
+                MediaSourceError::ConnectionError(format!("Failed to await session manager: {e}"))
             })?;
 
         Ok(Self { manager })
@@ -69,12 +69,12 @@ impl WindowsMediaControlProvider {
 
     fn get_sessions(&self) -> Result<Vec<WinSession>> {
         let sessions = self.manager.GetSessions().map_err(|e| {
-            MediaWatcherError::ConnectionError(format!("Failed to get sessions: {e}"))
+            MediaSourceError::ConnectionError(format!("Failed to get sessions: {e}"))
         })?;
 
         let mut result = Vec::new();
         let size = sessions.Size().map_err(|e| {
-            MediaWatcherError::ConnectionError(format!("Failed to get sessions size: {e}"))
+            MediaSourceError::ConnectionError(format!("Failed to get sessions size: {e}"))
         })?;
 
         for i in 0..size {
@@ -89,7 +89,7 @@ impl WindowsMediaControlProvider {
     fn get_session_id(session: &WinSession) -> Result<String> {
         let app_id = session
             .SourceAppUserModelId()
-            .map_err(|e| MediaWatcherError::ParseError(format!("Failed to get app ID: {e}")))?;
+            .map_err(|e| MediaSourceError::ParseError(format!("Failed to get app ID: {e}")))?;
 
         Ok(app_id.to_string())
     }
@@ -99,24 +99,24 @@ impl WindowsMediaControlProvider {
         let media_props = session
             .TryGetMediaPropertiesAsync()
             .map_err(|e| {
-                MediaWatcherError::ParseError(format!("Failed to get media properties: {e}"))
+                MediaSourceError::ParseError(format!("Failed to get media properties: {e}"))
             })?
             .await
             .map_err(|e| {
-                MediaWatcherError::ParseError(format!("Failed to await media properties: {e}"))
+                MediaSourceError::ParseError(format!("Failed to await media properties: {e}"))
             })?;
 
         let playback_info = session.GetPlaybackInfo().map_err(|e| {
-            MediaWatcherError::ParseError(format!("Failed to get playback info: {e}"))
+            MediaSourceError::ParseError(format!("Failed to get playback info: {e}"))
         })?;
 
         let playback_status = playback_info.PlaybackStatus().map_err(|e| {
-            MediaWatcherError::ParseError(format!("Failed to get playback status: {e}"))
+            MediaSourceError::ParseError(format!("Failed to get playback status: {e}"))
         })?;
 
         let timeline = session
             .GetTimelineProperties()
-            .map_err(|e| MediaWatcherError::ParseError(format!("Failed to get timeline: {e}")))?;
+            .map_err(|e| MediaSourceError::ParseError(format!("Failed to get timeline: {e}")))?;
 
         let title = media_props.Title().unwrap_or_default().to_string();
 
@@ -208,7 +208,7 @@ impl MediaSessionProvider for WindowsMediaControlProvider {
             }
         }
 
-        Err(MediaWatcherError::PlayerNotFound(session_id.to_string()))
+        Err(MediaSourceError::PlayerNotFound(session_id.to_string()))
     }
 
     fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send + 'static {
@@ -279,7 +279,7 @@ impl MediaSessionProvider for WindowsMediaControlProvider {
     }
 }
 
-/// Windows media watcher implementation using Windows Media Control API.
+/// Windows media source implementation using Windows Media Control API.
 ///
 /// This implementation uses the Windows Runtime API
 /// [`GlobalSystemMediaTransportControlsSessionManager`](https://learn.microsoft.com/en-us/uwp/api/windows.media.control.globalsystemmediatransportcontrolssessionmanager)
@@ -303,9 +303,9 @@ impl MediaSessionProvider for WindowsMediaControlProvider {
 /// # Note
 ///
 /// This type is visible for technical reasons but should not be used directly.
-/// Use [`nowhear::MediaWatcherBuilder`] to create media watchers, which will
+/// Use [`nowhear::MediaSourceBuilder`] to create media sources, which will
 /// automatically select this implementation on Windows systems.
-pub struct WindowsMediaWatcher<P: MediaSessionProvider = WindowsMediaControlProvider> {
+pub struct WindowsMediaSource<P: MediaSessionProvider = WindowsMediaControlProvider> {
     provider: Arc<P>,
 }
 
@@ -418,10 +418,10 @@ impl PlayerMonitor {
     }
 }
 
-impl WindowsMediaWatcher<WindowsMediaControlProvider> {
-    /// Creates a new Windows media watcher.
+impl WindowsMediaSource<WindowsMediaControlProvider> {
+    /// Creates a new Windows media source.
     ///
-    /// Note: This is an internal API. Use `MediaWatcherBuilder` instead.
+    /// Note: This is an internal API. Use `MediaSourceBuilder` instead.
     pub async fn new() -> Result<Self> {
         Ok(Self {
             provider: Arc::new(WindowsMediaControlProvider::new().await?),
@@ -429,14 +429,14 @@ impl WindowsMediaWatcher<WindowsMediaControlProvider> {
     }
 }
 
-impl<P: MediaSessionProvider + 'static> WindowsMediaWatcher<P> {
+impl<P: MediaSessionProvider + 'static> WindowsMediaSource<P> {
     #[cfg(test)]
     pub const fn with_provider(provider: Arc<P>) -> Self {
         Self { provider }
     }
 }
 
-impl<P: MediaSessionProvider + 'static> MediaWatcher for WindowsMediaWatcher<P> {
+impl<P: MediaSessionProvider + 'static> MediaSource for WindowsMediaSource<P> {
     async fn list_players(&self) -> Result<Vec<String>> {
         let sessions = self.provider.get_all_sessions().await?;
         Ok(sessions.keys().cloned().collect())
@@ -498,7 +498,7 @@ mod tests {
                     position: state.position,
                     volume: state.volume,
                 })
-                .ok_or_else(|| MediaWatcherError::PlayerNotFound(session_id.to_string()))
+                .ok_or_else(|| MediaSourceError::PlayerNotFound(session_id.to_string()))
         }
 
         fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send + 'static {
@@ -531,14 +531,14 @@ mod tests {
         }
     }
 
-    // WindowsMediaWatcher tests with mock provider
+    // WindowsMediaSource tests with mock provider
 
     #[tokio::test]
     async fn test_list_players_with_no_sessions() -> Result<()> {
         let provider = Arc::new(MockMediaSessionProvider::new());
-        let watcher = WindowsMediaWatcher::with_provider(provider);
+        let source = WindowsMediaSource::with_provider(provider);
 
-        let players = watcher.list_players().await?;
+        let players = source.list_players().await?;
 
         assert_eq!(players, Vec::<String>::new());
 
@@ -554,9 +554,9 @@ mod tests {
             Some(Duration::from_secs(10)),
         );
         let provider = Arc::new(MockMediaSessionProvider::new().with_session("Spotify.exe", state));
-        let watcher = WindowsMediaWatcher::with_provider(provider);
+        let source = WindowsMediaSource::with_provider(provider);
 
-        let players = watcher.list_players().await?;
+        let players = source.list_players().await?;
 
         assert_eq!(players, vec!["Spotify.exe".to_string()]);
 
@@ -582,9 +582,9 @@ mod tests {
                 .with_session("Spotify.exe", spotify_state)
                 .with_session("vlc.exe", vlc_state),
         );
-        let watcher = WindowsMediaWatcher::with_provider(provider);
+        let source = WindowsMediaSource::with_provider(provider);
 
-        let mut players = watcher.list_players().await?;
+        let mut players = source.list_players().await?;
         players.sort();
 
         assert_eq!(
@@ -604,9 +604,9 @@ mod tests {
             Some(Duration::from_secs(10)),
         );
         let provider = Arc::new(MockMediaSessionProvider::new().with_session("Spotify.exe", state));
-        let watcher = WindowsMediaWatcher::with_provider(provider);
+        let source = WindowsMediaSource::with_provider(provider);
 
-        let player_info = watcher.get_player("Spotify.exe").await?;
+        let player_info = source.get_player("Spotify.exe").await?;
 
         assert_eq!(
             player_info,
@@ -625,12 +625,12 @@ mod tests {
     #[tokio::test]
     async fn test_get_player_not_found() {
         let provider = Arc::new(MockMediaSessionProvider::new());
-        let watcher = WindowsMediaWatcher::with_provider(provider);
+        let source = WindowsMediaSource::with_provider(provider);
 
-        let result = watcher.get_player("nonexistent.exe").await;
+        let result = source.get_player("nonexistent.exe").await;
         assert_eq!(
             result,
-            Err(MediaWatcherError::PlayerNotFound(
+            Err(MediaSourceError::PlayerNotFound(
                 "nonexistent.exe".to_string()
             ))
         );
@@ -645,9 +645,9 @@ mod tests {
             Some(Duration::from_secs(45)),
         );
         let provider = Arc::new(MockMediaSessionProvider::new().with_session("vlc.exe", state));
-        let watcher = WindowsMediaWatcher::with_provider(provider);
+        let source = WindowsMediaSource::with_provider(provider);
 
-        let player_info = watcher.get_player("vlc.exe").await?;
+        let player_info = source.get_player("vlc.exe").await?;
 
         assert_eq!(
             player_info,

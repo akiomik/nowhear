@@ -89,11 +89,11 @@ pub enum PlaybackState {
 /// # Examples
 ///
 /// ```no_run
-/// use nowhear::{MediaWatcher, MediaWatcherBuilder, Result};
+/// use nowhear::{MediaSource, MediaSourceBuilder, Result};
 ///
 /// # async fn example() -> Result<()> {
-/// let watcher = MediaWatcherBuilder::new().build().await?;
-/// let player_info = watcher.get_player("spotify").await?;
+/// let source = MediaSourceBuilder::new().build().await?;
+/// let player_info = source.get_player("spotify").await?;
 ///
 /// if let Some(track) = player_info.current_track {
 ///     println!("Playing: {} by {}", track.title, track.artist.join(", "));
@@ -148,20 +148,20 @@ impl PlayerInfo {
     }
 }
 
-/// Events emitted by the media watcher.
+/// Events emitted by the media source.
 ///
 /// These events are generated when media playback state changes across any
-/// monitored player. Subscribe to these events using [`crate::MediaWatcher::event_stream`].
+/// monitored player. Subscribe to these events using [`crate::MediaSource::event_stream`].
 ///
 /// # Examples
 ///
 /// ```no_run
-/// use nowhear::{MediaWatcher, MediaWatcherBuilder, MediaEvent, Result};
+/// use nowhear::{MediaSource, MediaSourceBuilder, MediaEvent, Result};
 /// use futures::StreamExt;
 ///
 /// # async fn example() -> Result<()> {
-/// let watcher = MediaWatcherBuilder::new().build().await?;
-/// let mut stream = watcher.event_stream().await?;
+/// let source = MediaSourceBuilder::new().build().await?;
+/// let mut stream = source.event_stream().await?;
 ///
 /// while let Some(event) = stream.next().await {
 ///     match event {

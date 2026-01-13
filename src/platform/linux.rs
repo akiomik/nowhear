@@ -10,9 +10,9 @@ use mpris::{Metadata, PlaybackStatus as MprisPlaybackStatus, Player, PlayerFinde
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use crate::error::{MediaWatcherError, Result};
+use crate::error::{MediaSourceError, Result};
+use crate::source::{EventStream, MediaSource};
 use crate::types::{MediaEvent, PlaybackState, PlayerInfo, Track};
-use crate::watcher::{EventStream, MediaWatcher};
 
 /// Internal trait for abstracting player discovery mechanisms.
 ///
@@ -33,7 +33,7 @@ pub struct MprisProvider;
 impl MprisProvider {
     pub fn new() -> Result<Self> {
         // Verify that we can create a PlayerFinder (connection is available)
-        PlayerFinder::new().map_err(|e| MediaWatcherError::ConnectionError(e.to_string()))?;
+        PlayerFinder::new().map_err(|e| MediaSourceError::ConnectionError(e.to_string()))?;
 
         Ok(Self {})
     }
@@ -42,11 +42,11 @@ impl MprisProvider {
 impl PlayerDiscoveryProvider for MprisProvider {
     async fn discover_players(&self) -> Result<Vec<String>> {
         let finder =
-            PlayerFinder::new().map_err(|e| MediaWatcherError::ConnectionError(e.to_string()))?;
+            PlayerFinder::new().map_err(|e| MediaSourceError::ConnectionError(e.to_string()))?;
 
         let players = finder
             .find_all()
-            .map_err(|e| MediaWatcherError::ConnectionError(e.to_string()))?;
+            .map_err(|e| MediaSourceError::ConnectionError(e.to_string()))?;
 
         let player_names: Vec<String> = players
             .iter()
@@ -58,24 +58,24 @@ impl PlayerDiscoveryProvider for MprisProvider {
 
     async fn get_player_info(&self, player_name: &str) -> Result<PlayerInfo> {
         let finder =
-            PlayerFinder::new().map_err(|e| MediaWatcherError::ConnectionError(e.to_string()))?;
+            PlayerFinder::new().map_err(|e| MediaSourceError::ConnectionError(e.to_string()))?;
 
         let players = finder
             .find_all()
-            .map_err(|e| MediaWatcherError::ConnectionError(e.to_string()))?;
+            .map_err(|e| MediaSourceError::ConnectionError(e.to_string()))?;
 
         let player = players
             .iter()
             .find(|p| extract_player_name(p.bus_name()) == player_name)
-            .ok_or_else(|| MediaWatcherError::PlayerNotFound(player_name.to_string()))?;
+            .ok_or_else(|| MediaSourceError::PlayerNotFound(player_name.to_string()))?;
 
         let metadata = player
             .get_metadata()
-            .map_err(|e| MediaWatcherError::ParseError(e.to_string()))?;
+            .map_err(|e| MediaSourceError::ParseError(e.to_string()))?;
 
         let playback_status = player
             .get_playback_status()
-            .map_err(|e| MediaWatcherError::ParseError(e.to_string()))?;
+            .map_err(|e| MediaSourceError::ParseError(e.to_string()))?;
 
         let position = player.get_position().ok();
 
@@ -158,7 +158,7 @@ impl PlayerDiscoveryProvider for MprisProvider {
     }
 }
 
-/// Linux media watcher implementation using MPRIS D-Bus interface.
+/// Linux media source implementation using MPRIS D-Bus interface.
 ///
 /// This implementation uses the [MPRIS (Media Player Remote Interfacing Specification)](https://specifications.freedesktop.org/mpris-spec/latest/)
 /// D-Bus interface to discover and interact with media players on Linux systems.
@@ -173,9 +173,9 @@ impl PlayerDiscoveryProvider for MprisProvider {
 /// # Note
 ///
 /// This type is visible for technical reasons but should not be used directly.
-/// Use [`nowhear::MediaWatcherBuilder`] to create media watchers, which will
+/// Use [`nowhear::MediaSourceBuilder`] to create media sources, which will
 /// automatically select this implementation on Linux systems.
-pub struct LinuxMediaWatcher<P: PlayerDiscoveryProvider = MprisProvider> {
+pub struct LinuxMediaSource<P: PlayerDiscoveryProvider = MprisProvider> {
     provider: Arc<P>,
 }
 
@@ -340,10 +340,10 @@ impl PlayerMonitor {
     }
 }
 
-impl LinuxMediaWatcher<MprisProvider> {
-    /// Creates a new Linux media watcher.
+impl LinuxMediaSource<MprisProvider> {
+    /// Creates a new Linux media source.
     ///
-    /// Note: This is an internal API. Use `MediaWatcherBuilder` instead.
+    /// Note: This is an internal API. Use `MediaSourceBuilder` instead.
     pub fn new() -> Result<Self> {
         Ok(Self {
             provider: Arc::new(MprisProvider::new()?),
@@ -351,14 +351,14 @@ impl LinuxMediaWatcher<MprisProvider> {
     }
 }
 
-impl<P: PlayerDiscoveryProvider + 'static> LinuxMediaWatcher<P> {
+impl<P: PlayerDiscoveryProvider + 'static> LinuxMediaSource<P> {
     #[cfg(test)]
     pub const fn with_provider(provider: Arc<P>) -> Self {
         Self { provider }
     }
 }
 
-impl<P: PlayerDiscoveryProvider + 'static> MediaWatcher for LinuxMediaWatcher<P> {
+impl<P: PlayerDiscoveryProvider + 'static> MediaSource for LinuxMediaSource<P> {
     async fn list_players(&self) -> Result<Vec<String>> {
         self.provider.discover_players().await
     }
@@ -460,7 +460,7 @@ mod tests {
             self.players
                 .get(player_name)
                 .cloned()
-                .ok_or_else(|| MediaWatcherError::PlayerNotFound(player_name.to_string()))
+                .ok_or_else(|| MediaSourceError::PlayerNotFound(player_name.to_string()))
         }
 
         fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send + 'static {
@@ -496,14 +496,14 @@ mod tests {
         }
     }
 
-    // LinuxMediaWatcher tests with mock provider
+    // LinuxMediaSource tests with mock provider
 
     #[tokio::test]
     async fn test_list_players_with_no_players() -> Result<()> {
         let provider = Arc::new(MockPlayerDiscoveryProvider::new());
-        let watcher = LinuxMediaWatcher::with_provider(provider);
+        let source = LinuxMediaSource::with_provider(provider);
 
-        let players = watcher.list_players().await?;
+        let players = source.list_players().await?;
         assert_eq!(players, Vec::<String>::new());
 
         Ok(())
@@ -519,9 +519,9 @@ mod tests {
             Some(0.8),
         );
         let provider = Arc::new(MockPlayerDiscoveryProvider::new().with_player("spotify", info));
-        let watcher = LinuxMediaWatcher::with_provider(provider);
+        let source = LinuxMediaSource::with_provider(provider);
 
-        let players = watcher.list_players().await?;
+        let players = source.list_players().await?;
         assert_eq!(players, vec!["spotify".to_string()]);
 
         Ok(())
@@ -548,9 +548,9 @@ mod tests {
                 .with_player("spotify", spotify_info)
                 .with_player("vlc", vlc_info),
         );
-        let watcher = LinuxMediaWatcher::with_provider(provider);
+        let source = LinuxMediaSource::with_provider(provider);
 
-        let mut players = watcher.list_players().await?;
+        let mut players = source.list_players().await?;
         players.sort();
         assert_eq!(players, vec!["spotify".to_string(), "vlc".to_string()]);
 
@@ -568,9 +568,9 @@ mod tests {
             Some(0.8),
         );
         let provider = Arc::new(MockPlayerDiscoveryProvider::new().with_player("spotify", info));
-        let watcher = LinuxMediaWatcher::with_provider(provider);
+        let source = LinuxMediaSource::with_provider(provider);
 
-        let player_info = watcher.get_player("spotify").await?;
+        let player_info = source.get_player("spotify").await?;
         assert_eq!(
             player_info,
             PlayerInfo {
@@ -588,12 +588,12 @@ mod tests {
     #[tokio::test]
     async fn test_get_player_not_found() {
         let provider = Arc::new(MockPlayerDiscoveryProvider::new());
-        let watcher = LinuxMediaWatcher::with_provider(provider);
+        let source = LinuxMediaSource::with_provider(provider);
 
-        let result = watcher.get_player("nonexistent").await;
+        let result = source.get_player("nonexistent").await;
         assert_eq!(
             result,
-            Err(MediaWatcherError::PlayerNotFound("nonexistent".to_string()))
+            Err(MediaSourceError::PlayerNotFound("nonexistent".to_string()))
         );
     }
 
@@ -608,9 +608,9 @@ mod tests {
             Some(0.6),
         );
         let provider = Arc::new(MockPlayerDiscoveryProvider::new().with_player("vlc", info));
-        let watcher = LinuxMediaWatcher::with_provider(provider);
+        let source = LinuxMediaSource::with_provider(provider);
 
-        let player_info = watcher.get_player("vlc").await?;
+        let player_info = source.get_player("vlc").await?;
         assert_eq!(
             player_info,
             PlayerInfo {

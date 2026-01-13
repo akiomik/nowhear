@@ -1,7 +1,7 @@
-//! Media watcher trait and builder.
+//! Media source trait and builder.
 //!
-//! This module provides the core [`MediaWatcher`] trait that defines the interface
-//! for interacting with media players, and the [`MediaWatcherBuilder`] for creating
+//! This module provides the core [`MediaSource`] trait that defines the interface
+//! for interacting with media players, and the [`MediaSourceBuilder`] for creating
 //! platform-specific implementations.
 
 use std::future::Future;
@@ -9,17 +9,17 @@ use std::future::Future;
 use futures::stream::BoxStream;
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-use crate::error::MediaWatcherError;
+use crate::error::MediaSourceError;
 use crate::error::Result;
 #[cfg(target_os = "linux")]
-use crate::platform::linux::LinuxMediaWatcher;
+use crate::platform::linux::LinuxMediaSource;
 #[cfg(target_os = "macos")]
-use crate::platform::macos::MacOSMediaWatcher;
+use crate::platform::macos::MacOSMediaSource;
 #[cfg(target_os = "windows")]
-use crate::platform::windows::WindowsMediaWatcher;
+use crate::platform::windows::WindowsMediaSource;
 use crate::types::{MediaEvent, PlayerInfo};
 
-/// Type alias for event stream returned by the media watcher.
+/// Type alias for event stream returned by the media source.
 ///
 /// This is a boxed stream that yields [`MediaEvent`] items. The stream is
 /// `'static` and can be moved across thread boundaries.
@@ -27,11 +27,11 @@ use crate::types::{MediaEvent, PlayerInfo};
 /// # Examples
 ///
 /// ```no_run
-/// # use nowhear::{MediaWatcher, MediaWatcherBuilder, Result};
+/// # use nowhear::{MediaSource, MediaSourceBuilder, Result};
 /// # use futures::StreamExt;
 /// # async fn example() -> Result<()> {
-/// let watcher = MediaWatcherBuilder::new().build().await?;
-/// let mut stream = watcher.event_stream().await?;
+/// let source = MediaSourceBuilder::new().build().await?;
+/// let mut stream = source.event_stream().await?;
 ///
 /// // Stream will emit events indefinitely
 /// while let Some(event) = stream.next().await {
@@ -42,12 +42,12 @@ use crate::types::{MediaEvent, PlayerInfo};
 /// ```
 pub type EventStream = BoxStream<'static, MediaEvent>;
 
-/// Main trait for media watching functionality.
+/// Main trait for media source functionality.
 ///
 /// This trait provides methods to list players, query player information,
 /// and subscribe to media events. It is implemented by platform-specific
-/// media watchers.
-pub trait MediaWatcher: Send + Sync {
+/// media sources.
+pub trait MediaSource: Send + Sync {
     /// Lists all currently available media players.
     ///
     /// # Returns
@@ -57,10 +57,10 @@ pub trait MediaWatcher: Send + Sync {
     /// # Examples
     ///
     /// ```no_run
-    /// # use nowhear::{MediaWatcher, MediaWatcherBuilder, Result};
+    /// # use nowhear::{MediaSource, MediaSourceBuilder, Result};
     /// # async fn example() -> Result<()> {
-    /// let watcher = MediaWatcherBuilder::new().build().await?;
-    /// let players = watcher.list_players().await?;
+    /// let source = MediaSourceBuilder::new().build().await?;
+    /// let players = source.list_players().await?;
     /// println!("Available players: {:?}", players);
     /// # Ok(())
     /// # }
@@ -79,15 +79,15 @@ pub trait MediaWatcher: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns `MediaWatcherError::PlayerNotFound` if the player is not running.
+    /// Returns `MediaSourceError::PlayerNotFound` if the player is not running.
     ///
     /// # Examples
     ///
     /// ```no_run
-    /// # use nowhear::{MediaWatcher, MediaWatcherBuilder, Result};
+    /// # use nowhear::{MediaSource, MediaSourceBuilder, Result};
     /// # async fn example() -> Result<()> {
-    /// let watcher = MediaWatcherBuilder::new().build().await?;
-    /// let player_info = watcher.get_player("spotify").await?;
+    /// let source = MediaSourceBuilder::new().build().await?;
+    /// let player_info = source.get_player("spotify").await?;
     /// println!("Current track: {:?}", player_info.current_track);
     /// # Ok(())
     /// # }
@@ -106,11 +106,11 @@ pub trait MediaWatcher: Send + Sync {
     /// # Examples
     ///
     /// ```no_run
-    /// # use nowhear::{MediaWatcher, MediaWatcherBuilder, Result};
+    /// # use nowhear::{MediaSource, MediaSourceBuilder, Result};
     /// # use futures::StreamExt;
     /// # async fn example() -> Result<()> {
-    /// let watcher = MediaWatcherBuilder::new().build().await?;
-    /// let mut stream = watcher.event_stream().await?;
+    /// let source = MediaSourceBuilder::new().build().await?;
+    /// let mut stream = source.event_stream().await?;
     /// while let Some(event) = stream.next().await {
     ///     println!("Event: {:?}", event);
     /// }
@@ -120,20 +120,20 @@ pub trait MediaWatcher: Send + Sync {
     fn event_stream(&self) -> impl Future<Output = Result<EventStream>> + Send;
 }
 
-enum PlatformMediaWatcherInner {
+enum PlatformMediaSourceInner {
     #[cfg(target_os = "linux")]
-    Linux(LinuxMediaWatcher),
+    Linux(LinuxMediaSource),
     #[cfg(target_os = "macos")]
-    MacOS(MacOSMediaWatcher),
+    MacOS(MacOSMediaSource),
     #[cfg(target_os = "windows")]
-    Windows(WindowsMediaWatcher),
+    Windows(WindowsMediaSource),
 }
 
-/// Platform-specific media watcher implementation.
+/// Platform-specific media source implementation.
 ///
 /// This struct wraps the appropriate platform-specific implementation based on the
 /// target operating system. Users typically don't need to interact with this type
-/// directly; use [`MediaWatcherBuilder`] instead.
+/// directly; use [`MediaSourceBuilder`] instead.
 ///
 /// # Platform Implementations
 ///
@@ -144,132 +144,132 @@ enum PlatformMediaWatcherInner {
 /// # Examples
 ///
 /// ```no_run
-/// use nowhear::{MediaWatcherBuilder, Result};
+/// use nowhear::{MediaSourceBuilder, Result};
 ///
 /// # async fn example() -> Result<()> {
 /// // The builder automatically selects the correct platform implementation
-/// let watcher = MediaWatcherBuilder::new().build().await?;
+/// let source = MediaSourceBuilder::new().build().await?;
 /// # Ok(())
 /// # }
 /// ```
-pub struct PlatformMediaWatcher(PlatformMediaWatcherInner);
+pub struct PlatformMediaSource(PlatformMediaSourceInner);
 
-impl MediaWatcher for PlatformMediaWatcher {
+impl MediaSource for PlatformMediaSource {
     async fn list_players(&self) -> Result<Vec<String>> {
         match &self.0 {
             #[cfg(target_os = "linux")]
-            PlatformMediaWatcherInner::Linux(w) => w.list_players().await,
+            PlatformMediaSourceInner::Linux(w) => w.list_players().await,
             #[cfg(target_os = "macos")]
-            PlatformMediaWatcherInner::MacOS(w) => w.list_players().await,
+            PlatformMediaSourceInner::MacOS(w) => w.list_players().await,
             #[cfg(target_os = "windows")]
-            PlatformMediaWatcherInner::Windows(w) => w.list_players().await,
+            PlatformMediaSourceInner::Windows(w) => w.list_players().await,
         }
     }
 
     async fn get_player(&self, player_name: &str) -> Result<PlayerInfo> {
         match &self.0 {
             #[cfg(target_os = "linux")]
-            PlatformMediaWatcherInner::Linux(w) => w.get_player(player_name).await,
+            PlatformMediaSourceInner::Linux(w) => w.get_player(player_name).await,
             #[cfg(target_os = "macos")]
-            PlatformMediaWatcherInner::MacOS(w) => w.get_player(player_name).await,
+            PlatformMediaSourceInner::MacOS(w) => w.get_player(player_name).await,
             #[cfg(target_os = "windows")]
-            PlatformMediaWatcherInner::Windows(w) => w.get_player(player_name).await,
+            PlatformMediaSourceInner::Windows(w) => w.get_player(player_name).await,
         }
     }
 
     async fn event_stream(&self) -> Result<EventStream> {
         match &self.0 {
             #[cfg(target_os = "linux")]
-            PlatformMediaWatcherInner::Linux(w) => w.event_stream().await,
+            PlatformMediaSourceInner::Linux(w) => w.event_stream().await,
             #[cfg(target_os = "macos")]
-            PlatformMediaWatcherInner::MacOS(w) => w.event_stream().await,
+            PlatformMediaSourceInner::MacOS(w) => w.event_stream().await,
             #[cfg(target_os = "windows")]
-            PlatformMediaWatcherInner::Windows(w) => w.event_stream().await,
+            PlatformMediaSourceInner::Windows(w) => w.event_stream().await,
         }
     }
 }
 
-/// Builder for creating a `MediaWatcher` instance.
+/// Builder for creating a `MediaSource` instance.
 ///
-/// This builder provides a convenient way to create a media watcher
+/// This builder provides a convenient way to create a media source
 /// for the current platform.
 ///
 /// # Examples
 ///
 /// ```no_run
-/// # use nowhear::{MediaWatcherBuilder, Result};
+/// # use nowhear::{MediaSourceBuilder, Result};
 /// # async fn example() -> Result<()> {
-/// let watcher = MediaWatcherBuilder::new().build().await?;
+/// let source = MediaSourceBuilder::new().build().await?;
 /// # Ok(())
 /// # }
 /// ```
-pub struct MediaWatcherBuilder {
+pub struct MediaSourceBuilder {
     // Future extensions: filter by player name, etc.
 }
 
-impl MediaWatcherBuilder {
+impl MediaSourceBuilder {
     /// Creates a new builder instance.
     ///
     /// # Examples
     ///
     /// ```
-    /// use nowhear::MediaWatcherBuilder;
+    /// use nowhear::MediaSourceBuilder;
     ///
-    /// let builder = MediaWatcherBuilder::new();
+    /// let builder = MediaSourceBuilder::new();
     /// ```
     #[must_use]
     pub const fn new() -> Self {
         Self {}
     }
 
-    /// Builds and initializes the platform-specific media watcher.
+    /// Builds and initializes the platform-specific media source.
     ///
     /// This method detects the current platform and creates the appropriate
     /// implementation (Linux, macOS, or Windows).
     ///
     /// # Returns
     ///
-    /// Returns a `PlatformMediaWatcher` instance ready to use.
+    /// Returns a `PlatformMediaSource` instance ready to use.
     ///
     /// # Errors
     ///
-    /// Returns `MediaWatcherError::UnsupportedPlatform` if the current platform
-    /// is not supported, or `MediaWatcherError::ConnectionError` if the platform-specific
+    /// Returns `MediaSourceError::UnsupportedPlatform` if the current platform
+    /// is not supported, or `MediaSourceError::ConnectionError` if the platform-specific
     /// initialization fails.
     #[allow(clippy::unused_async)]
-    pub async fn build(self) -> Result<PlatformMediaWatcher> {
+    pub async fn build(self) -> Result<PlatformMediaSource> {
         #[cfg(target_os = "linux")]
         {
-            Ok(PlatformMediaWatcher(PlatformMediaWatcherInner::Linux(
-                LinuxMediaWatcher::new()?,
+            Ok(PlatformMediaSource(PlatformMediaSourceInner::Linux(
+                LinuxMediaSource::new()?,
             )))
         }
 
         #[cfg(target_os = "macos")]
         {
-            Ok(PlatformMediaWatcher(PlatformMediaWatcherInner::MacOS(
-                MacOSMediaWatcher::new(),
+            Ok(PlatformMediaSource(PlatformMediaSourceInner::MacOS(
+                MacOSMediaSource::new(),
             )))
         }
 
         #[cfg(target_os = "windows")]
         {
-            Ok(PlatformMediaWatcher(PlatformMediaWatcherInner::Windows(
-                WindowsMediaWatcher::new().await?,
+            Ok(PlatformMediaSource(PlatformMediaSourceInner::Windows(
+                WindowsMediaSource::new().await?,
             )))
         }
 
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         {
-            Err(MediaWatcherError::UnsupportedPlatform)
+            Err(MediaSourceError::UnsupportedPlatform)
         }
     }
 }
 
-impl Default for MediaWatcherBuilder {
+impl Default for MediaSourceBuilder {
     /// Creates a new builder using the default configuration.
     ///
-    /// This is equivalent to calling [`MediaWatcherBuilder::new()`].
+    /// This is equivalent to calling [`MediaSourceBuilder::new()`].
     fn default() -> Self {
         Self::new()
     }

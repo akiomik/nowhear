@@ -11,9 +11,9 @@ use tokio::sync::mpsc;
 use tokio::time;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use crate::error::{MediaWatcherError, Result};
+use crate::error::{MediaSourceError, Result};
+use crate::source::{EventStream, MediaSource};
 use crate::types::{MediaEvent, PlaybackState, PlayerInfo, Track};
-use crate::watcher::{EventStream, MediaWatcher};
 
 /// Internal player state representation for macOS implementation.
 ///
@@ -50,7 +50,7 @@ impl PlayerStateProvider for AppleScriptProvider {
         match player_name {
             "Music" => Self::get_music_app_state().await,
             "Spotify" => Self::get_spotify_state().await,
-            _ => Err(MediaWatcherError::PlayerNotFound(player_name.to_string())),
+            _ => Err(MediaSourceError::PlayerNotFound(player_name.to_string())),
         }
     }
 
@@ -123,7 +123,7 @@ impl AppleScriptProvider {
     }
 }
 
-/// macOS media watcher implementation using AppleScript.
+/// macOS media source implementation using AppleScript.
 ///
 /// This implementation uses AppleScript to query the state of media players on macOS.
 /// Currently supports:
@@ -144,9 +144,9 @@ impl AppleScriptProvider {
 /// # Note
 ///
 /// This type is visible for technical reasons but should not be used directly.
-/// Use [`nowhear::MediaWatcherBuilder`] to create media watchers, which will
+/// Use [`nowhear::MediaSourceBuilder`] to create media sources, which will
 /// automatically select this implementation on macOS systems.
-pub struct MacOSMediaWatcher<P: PlayerStateProvider = AppleScriptProvider> {
+pub struct MacOSMediaSource<P: PlayerStateProvider = AppleScriptProvider> {
     provider: Arc<P>,
 }
 
@@ -267,10 +267,10 @@ impl PlayerMonitor {
     }
 }
 
-impl MacOSMediaWatcher<AppleScriptProvider> {
-    /// Creates a new macOS media watcher.
+impl MacOSMediaSource<AppleScriptProvider> {
+    /// Creates a new macOS media source.
     ///
-    /// Note: This is an internal API. Use `MediaWatcherBuilder` instead.
+    /// Note: This is an internal API. Use `MediaSourceBuilder` instead.
     pub fn new() -> Self {
         Self {
             provider: Arc::new(AppleScriptProvider),
@@ -278,7 +278,7 @@ impl MacOSMediaWatcher<AppleScriptProvider> {
     }
 }
 
-impl<P: PlayerStateProvider + 'static> MacOSMediaWatcher<P> {
+impl<P: PlayerStateProvider + 'static> MacOSMediaSource<P> {
     #[cfg(test)]
     pub const fn with_provider(provider: Arc<P>) -> Self {
         Self { provider }
@@ -326,7 +326,7 @@ impl<P: PlayerStateProvider + 'static> MacOSMediaWatcher<P> {
     }
 }
 
-impl<P: PlayerStateProvider + 'static> MediaWatcher for MacOSMediaWatcher<P> {
+impl<P: PlayerStateProvider + 'static> MediaSource for MacOSMediaSource<P> {
     async fn list_players(&self) -> Result<Vec<String>> {
         self.provider.list_available_players().await
     }
@@ -358,11 +358,11 @@ async fn execute_applescript(script: &str) -> Result<String> {
         .output()
         .await
         .map_err(|e| {
-            MediaWatcherError::InternalError(format!("Failed to execute AppleScript: {e}"))
+            MediaSourceError::InternalError(format!("Failed to execute AppleScript: {e}"))
         })?;
 
     if !output.status.success() {
-        return Err(MediaWatcherError::InternalError(format!(
+        return Err(MediaSourceError::InternalError(format!(
             "AppleScript error: {}",
             String::from_utf8_lossy(&output.stderr)
         )));
@@ -497,14 +497,14 @@ mod tests {
         }
     }
 
-    // MacOSMediaWatcher tests with mock provider
+    // MacOSMediaSource tests with mock provider
 
     #[tokio::test]
     async fn test_list_players_with_no_players() -> Result<()> {
         let provider = Arc::new(MockPlayerStateProvider::new());
-        let watcher = MacOSMediaWatcher::with_provider(provider);
+        let source = MacOSMediaSource::with_provider(provider);
 
-        let players = watcher.list_players().await?;
+        let players = source.list_players().await?;
         assert_eq!(players, Vec::<String>::new());
 
         Ok(())
@@ -519,9 +519,9 @@ mod tests {
             Some(0.8),
         );
         let provider = Arc::new(MockPlayerStateProvider::new().with_player("Music", Some(state)));
-        let watcher = MacOSMediaWatcher::with_provider(provider);
+        let source = MacOSMediaSource::with_provider(provider);
 
-        let players = watcher.list_players().await?;
+        let players = source.list_players().await?;
         assert_eq!(players, vec!["Music".to_string()]);
 
         Ok(())
@@ -546,9 +546,9 @@ mod tests {
                 .with_player("Music", Some(music_state))
                 .with_player("Spotify", Some(spotify_state)),
         );
-        let watcher = MacOSMediaWatcher::with_provider(provider);
+        let source = MacOSMediaSource::with_provider(provider);
 
-        let mut players = watcher.list_players().await?;
+        let mut players = source.list_players().await?;
         players.sort();
         assert_eq!(players, vec!["Music".to_string(), "Spotify".to_string()]);
 
@@ -565,9 +565,9 @@ mod tests {
             Some(0.8),
         );
         let provider = Arc::new(MockPlayerStateProvider::new().with_player("Music", Some(state)));
-        let watcher = MacOSMediaWatcher::with_provider(provider);
+        let source = MacOSMediaSource::with_provider(provider);
 
-        let player_info = watcher.get_player("Music").await?;
+        let player_info = source.get_player("Music").await?;
         assert_eq!(
             player_info,
             PlayerInfo {
@@ -585,9 +585,9 @@ mod tests {
     #[tokio::test]
     async fn test_get_player_with_inactive_player() -> Result<()> {
         let provider = Arc::new(MockPlayerStateProvider::new().with_player("Music", None));
-        let watcher = MacOSMediaWatcher::with_provider(provider);
+        let source = MacOSMediaSource::with_provider(provider);
 
-        let player_info = watcher.get_player("Music").await?;
+        let player_info = source.get_player("Music").await?;
 
         assert_eq!(
             player_info,
@@ -613,9 +613,9 @@ mod tests {
             Some(0.5),
         );
         let provider = Arc::new(MockPlayerStateProvider::new().with_player("Spotify", Some(state)));
-        let watcher = MacOSMediaWatcher::with_provider(provider);
+        let source = MacOSMediaSource::with_provider(provider);
 
-        let player_info = watcher.get_player("Spotify").await?;
+        let player_info = source.get_player("Spotify").await?;
 
         assert_eq!(
             player_info,

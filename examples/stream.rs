@@ -1,15 +1,15 @@
 use futures::StreamExt;
-use nowhear::{MediaEvent, MediaWatcher, MediaWatcherBuilder, Result};
+use nowhear::{MediaEvent, MediaSource, MediaSourceBuilder, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Create a media watcher
-    let watcher = MediaWatcherBuilder::new().build().await?;
+    // Create a media source
+    let source = MediaSourceBuilder::new().build().await?;
 
     println!("Watching for media events... (Press Ctrl+C to exit)");
 
     // Create an event stream
-    let mut stream = watcher.event_stream().await?;
+    let mut stream = source.event_stream().await?;
 
     // Process events as they arrive
     while let Some(event) = stream.next().await {

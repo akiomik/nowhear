@@ -40,20 +40,20 @@ futures = "0.3"
 ### Basic Example
 
 ```rust
-use nowhear::{MediaWatcher, MediaWatcherBuilder, Result};
+use nowhear::{MediaSource, MediaSourceBuilder, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Create a media watcher
-    let watcher = MediaWatcherBuilder::new().build().await?;
+    // Create a media source
+    let source = MediaSourceBuilder::new().build().await?;
     
     // List all active media players
-    let players = watcher.list_players().await?;
+    let players = source.list_players().await?;
     println!("Active players: {players:?}");
     
     // Get information for a specific player
     if let Some(player_name) = players.first() {
-        let info = watcher.get_player(player_name).await?;
+        let info = source.get_player(player_name).await?;
         println!("Player: {}", info.player_name);
         println!("State: {:?}", info.playback_state);
         if let Some(track) = info.current_track {
@@ -69,14 +69,14 @@ async fn main() -> Result<()> {
 
 ```rust
 use futures::StreamExt;
-use nowhear::{MediaEvent, MediaWatcher, MediaWatcherBuilder, Result};
+use nowhear::{MediaEvent, MediaSource, MediaSourceBuilder, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let watcher = MediaWatcherBuilder::new().build().await?;
+    let source = MediaSourceBuilder::new().build().await?;
     
     // Create an event stream
-    let mut stream = watcher.event_stream().await?;
+    let mut stream = source.event_stream().await?;
     
     // Process events as they arrive
     while let Some(event) = stream.next().await {
@@ -103,11 +103,10 @@ async fn main() -> Result<()> {
 
 ## API Overview
 
-### MediaWatcher Trait
+### MediaSource Trait
 
 ```rust
-#[async_trait]
-pub trait MediaWatcher: Send + Sync {
+pub trait MediaSource: Send + Sync {
     /// List all available players
     async fn list_players(&self) -> Result<Vec<String>>;
 
