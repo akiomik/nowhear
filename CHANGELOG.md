@@ -1,0 +1,35 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.1.0] - 2026-01-13
+
+### Added
+
+- Initial release of nowhear library
+- Cross-platform support for Linux, macOS, and Windows
+- `MediaSource` trait for unified API across platforms
+- `MediaSourceBuilder` for creating platform-specific media sources
+- Media player information retrieval (`list_players`, `get_player`)
+- Event streaming for real-time media playback monitoring
+- Support for the following media events:
+  - `TrackChanged`: Fired when a new track starts playing
+  - `StateChanged`: Fired when playback state changes
+  - `PositionChanged`: Fired when playback position changes (seek)
+  - `VolumeChanged`: Fired when volume changes
+  - `PlayerAdded`: Fired when a new player becomes available
+  - `PlayerRemoved`: Fired when a player becomes unavailable
+- Rich track metadata including title, artist, album, duration, and artwork URL
+- Platform-specific implementations:
+  - Linux: MPRIS D-Bus interface support
+  - macOS: AppleScript support for Music.app and Spotify
+  - Windows: Windows Media Control API support
+- Two example applications: `basic` and `stream`
+
+[unreleased]: https://github.com/akiomik/nowhear/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/akiomik/nowhear/releases/tag/v0.1.0
