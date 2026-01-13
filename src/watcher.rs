@@ -118,9 +118,18 @@ pub trait MediaWatcher: Send + Sync {
     fn event_stream(&self) -> impl Future<Output = Result<EventStream>> + Send;
 }
 
+enum PlatformMediaWatcherInner {
+    #[cfg(target_os = "linux")]
+    Linux(LinuxMediaWatcher),
+    #[cfg(target_os = "macos")]
+    MacOS(MacOSMediaWatcher),
+    #[cfg(target_os = "windows")]
+    Windows(WindowsMediaWatcher),
+}
+
 /// Platform-specific media watcher implementation.
 ///
-/// This enum wraps the appropriate platform-specific implementation based on the
+/// This struct wraps the appropriate platform-specific implementation based on the
 /// target operating system. Users typically don't need to interact with this type
 /// directly; use [`MediaWatcherBuilder`] instead.
 ///
@@ -141,46 +150,39 @@ pub trait MediaWatcher: Send + Sync {
 /// # Ok(())
 /// # }
 /// ```
-pub enum PlatformMediaWatcher {
-    #[cfg(target_os = "linux")]
-    Linux(LinuxMediaWatcher),
-    #[cfg(target_os = "macos")]
-    MacOS(MacOSMediaWatcher),
-    #[cfg(target_os = "windows")]
-    Windows(WindowsMediaWatcher),
-}
+pub struct PlatformMediaWatcher(PlatformMediaWatcherInner);
 
 impl MediaWatcher for PlatformMediaWatcher {
     async fn list_players(&self) -> Result<Vec<String>> {
-        match self {
+        match &self.0 {
             #[cfg(target_os = "linux")]
-            Self::Linux(w) => w.list_players().await,
+            PlatformMediaWatcherInner::Linux(w) => w.list_players().await,
             #[cfg(target_os = "macos")]
-            Self::MacOS(w) => w.list_players().await,
+            PlatformMediaWatcherInner::MacOS(w) => w.list_players().await,
             #[cfg(target_os = "windows")]
-            Self::Windows(w) => w.list_players().await,
+            PlatformMediaWatcherInner::Windows(w) => w.list_players().await,
         }
     }
 
     async fn get_player(&self, player_name: &str) -> Result<PlayerInfo> {
-        match self {
+        match &self.0 {
             #[cfg(target_os = "linux")]
-            Self::Linux(w) => w.get_player(player_name).await,
+            PlatformMediaWatcherInner::Linux(w) => w.get_player(player_name).await,
             #[cfg(target_os = "macos")]
-            Self::MacOS(w) => w.get_player(player_name).await,
+            PlatformMediaWatcherInner::MacOS(w) => w.get_player(player_name).await,
             #[cfg(target_os = "windows")]
-            Self::Windows(w) => w.get_player(player_name).await,
+            PlatformMediaWatcherInner::Windows(w) => w.get_player(player_name).await,
         }
     }
 
     async fn event_stream(&self) -> Result<EventStream> {
-        match self {
+        match &self.0 {
             #[cfg(target_os = "linux")]
-            Self::Linux(w) => w.event_stream().await,
+            PlatformMediaWatcherInner::Linux(w) => w.event_stream().await,
             #[cfg(target_os = "macos")]
-            Self::MacOS(w) => w.event_stream().await,
+            PlatformMediaWatcherInner::MacOS(w) => w.event_stream().await,
             #[cfg(target_os = "windows")]
-            Self::Windows(w) => w.event_stream().await,
+            PlatformMediaWatcherInner::Windows(w) => w.event_stream().await,
         }
     }
 }
@@ -236,19 +238,23 @@ impl MediaWatcherBuilder {
     pub async fn build(self) -> Result<PlatformMediaWatcher> {
         #[cfg(target_os = "linux")]
         {
-            Ok(PlatformMediaWatcher::Linux(LinuxMediaWatcher::new()?))
+            Ok(PlatformMediaWatcher(PlatformMediaWatcherInner::Linux(
+                LinuxMediaWatcher::new()?,
+            )))
         }
 
         #[cfg(target_os = "macos")]
         {
-            Ok(PlatformMediaWatcher::MacOS(MacOSMediaWatcher::new()))
+            Ok(PlatformMediaWatcher(PlatformMediaWatcherInner::MacOS(
+                MacOSMediaWatcher::new(),
+            )))
         }
 
         #[cfg(target_os = "windows")]
         {
-            Ok(PlatformMediaWatcher::Windows(
+            Ok(PlatformMediaWatcher(PlatformMediaWatcherInner::Windows(
                 WindowsMediaWatcher::new().await?,
-            ))
+            )))
         }
 
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]

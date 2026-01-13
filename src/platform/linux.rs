@@ -17,7 +17,6 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 ///
 /// This trait is used internally by the Linux implementation to allow
 /// for dependency injection in tests. It is not part of the public API.
-#[doc(hidden)]
 pub trait PlayerDiscoveryProvider: Send + Sync {
     fn discover_players(&self) -> impl Future<Output = Result<Vec<String>>> + Send;
     fn get_player_info(&self, player_name: &str)
@@ -28,11 +27,9 @@ pub trait PlayerDiscoveryProvider: Send + Sync {
 /// MPRIS-based provider for Linux.
 ///
 /// This provider uses the MPRIS D-Bus interface to discover and query media players.
-#[doc(hidden)]
-pub struct MprisProvider {}
+pub struct MprisProvider;
 
 impl MprisProvider {
-    #[doc(hidden)]
     pub fn new() -> Result<Self> {
         // Verify that we can create a PlayerFinder (connection is available)
         PlayerFinder::new().map_err(|e| MediaWatcherError::ConnectionError(e.to_string()))?;
@@ -176,7 +173,6 @@ struct PlayerMonitor {
 }
 
 #[derive(Clone, Debug)]
-#[doc(hidden)]
 pub struct PlayerState {
     track: Option<Track>,
     playback_state: PlaybackState,
@@ -336,7 +332,6 @@ impl LinuxMediaWatcher<MprisProvider> {
     /// Creates a new Linux media watcher.
     ///
     /// Note: This is an internal API. Use `MediaWatcherBuilder` instead.
-    #[doc(hidden)]
     pub fn new() -> Result<Self> {
         Ok(Self {
             provider: Arc::new(MprisProvider::new()?),
