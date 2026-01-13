@@ -8,7 +8,7 @@ use std::result;
 use thiserror::Error;
 
 /// Errors that can occur when using the media source.
-#[derive(Error, Debug, PartialEq, Eq)]
+#[derive(Clone, Error, Debug, PartialEq, Eq)]
 pub enum MediaSourceError {
     /// The requested player was not found or is not currently running.
     #[error("Player not found: {0}")]
