@@ -48,11 +48,11 @@
 //! ### Subscribing to Events
 //!
 //! ```no_run
-//! use nowhear::{MediaWatcher, MediaWatcherBuilder};
+//! use nowhear::{MediaWatcher, MediaWatcherBuilder, Result};
 //! use futures::StreamExt;
 //!
 //! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! async fn main() -> Result<()> {
 //!     let watcher = MediaWatcherBuilder::new().build().await?;
 //!     let mut stream = watcher.event_stream().await?;
 //!
