@@ -3,6 +3,7 @@
 //! This module defines the error types that can occur when interacting with
 //! media players across different platforms.
 
+use std::result;
 use thiserror::Error;
 
 /// Errors that can occur when using the media watcher.
@@ -43,4 +44,4 @@ pub enum MediaWatcherError {
 ///     Ok("success".to_string())
 /// }
 /// ```
-pub type Result<T> = std::result::Result<T, MediaWatcherError>;
+pub type Result<T> = result::Result<T, MediaWatcherError>;
