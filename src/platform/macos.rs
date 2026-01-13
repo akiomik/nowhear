@@ -19,19 +19,17 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 /// This structure is used internally to track player state changes and
 /// is not part of the public API.
 #[derive(Debug, Clone, PartialEq)]
-#[doc(hidden)]
 pub struct PlayerState {
-    pub(crate) track: Track,
-    pub(crate) playback_state: PlaybackState,
-    pub(crate) position: Option<Duration>,
-    pub(crate) volume: Option<f64>,
+    pub track: Track,
+    pub playback_state: PlaybackState,
+    pub position: Option<Duration>,
+    pub volume: Option<f64>,
 }
 
 /// Internal trait for abstracting player state retrieval.
 ///
 /// This trait is used internally by the macOS implementation to allow
 /// for dependency injection in tests. It is not part of the public API.
-#[doc(hidden)]
 pub trait PlayerStateProvider: Send + Sync {
     fn get_player_state(
         &self,
@@ -44,7 +42,6 @@ pub trait PlayerStateProvider: Send + Sync {
 ///
 /// This provider uses AppleScript to query Music.app and Spotify for their
 /// current playback state.
-#[doc(hidden)]
 pub struct AppleScriptProvider;
 
 impl PlayerStateProvider for AppleScriptProvider {
@@ -273,7 +270,6 @@ impl MacOSMediaWatcher<AppleScriptProvider> {
     /// Creates a new macOS media watcher.
     ///
     /// Note: This is an internal API. Use `MediaWatcherBuilder` instead.
-    #[doc(hidden)]
     pub fn new() -> Self {
         Self {
             provider: Arc::new(AppleScriptProvider),

@@ -26,19 +26,17 @@ use windows::core::Interface;
 /// This structure is used internally to track player state changes and
 /// is not part of the public API.
 #[derive(Debug, Clone, PartialEq)]
-#[doc(hidden)]
 pub struct PlayerState {
-    pub(crate) track: Track,
-    pub(crate) playback_state: PlaybackState,
-    pub(crate) position: Option<Duration>,
-    pub(crate) volume: Option<f64>,
+    pub track: Track,
+    pub playback_state: PlaybackState,
+    pub position: Option<Duration>,
+    pub volume: Option<f64>,
 }
 
 /// Internal trait for abstracting media session access.
 ///
 /// This trait is used internally by the Windows implementation to allow
 /// for dependency injection in tests. It is not part of the public API.
-#[doc(hidden)]
 pub trait MediaSessionProvider: Send + Sync {
     fn get_all_sessions(&self)
     -> impl Future<Output = Result<HashMap<String, PlayerState>>> + Send;
@@ -50,13 +48,11 @@ pub trait MediaSessionProvider: Send + Sync {
 /// Windows Media Control provider.
 ///
 /// This provider uses the Windows Media Control API to query media sessions.
-#[doc(hidden)]
 pub struct WindowsMediaControlProvider {
     manager: SessionManager,
 }
 
 impl WindowsMediaControlProvider {
-    #[doc(hidden)]
     pub async fn new() -> Result<Self> {
         let manager = SessionManager::RequestAsync()
             .map_err(|e| {
@@ -425,7 +421,6 @@ impl WindowsMediaWatcher<WindowsMediaControlProvider> {
     /// Creates a new Windows media watcher.
     ///
     /// Note: This is an internal API. Use `MediaWatcherBuilder` instead.
-    #[doc(hidden)]
     pub async fn new() -> Result<Self> {
         Ok(Self {
             provider: Arc::new(WindowsMediaControlProvider::new().await?),
