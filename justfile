@@ -11,6 +11,9 @@ build-windows:
   # NOTE: requires `brew install mingw-w64` on macos
   cargo build --target x86_64-pc-windows-gnu
 
+build-windows-aarch64:
+  cargo build --target aarch64-pc-windows-msvc
+
 test:
   cargo test --all-targets --all-features
 
