@@ -1,15 +1,12 @@
 //! Windows-specific implementation using Windows Media Control API.
 
-#[cfg(target_os = "windows")]
-use crate::error::{MediaWatcherError, Result};
-use crate::types::{MediaEvent, PlaybackState, PlayerInfo, Track};
-use crate::watcher::{EventStream, MediaWatcher};
-use futures::future;
-use futures::stream::Stream;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
+
+use futures::future;
+use futures::stream::Stream;
 use tokio::sync::mpsc;
 use tokio::time::{interval, sleep};
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -20,6 +17,10 @@ use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as WinPlaybackStatus,
 };
 use windows::core::Interface;
+
+use crate::error::{MediaWatcherError, Result};
+use crate::types::{MediaEvent, PlaybackState, PlayerInfo, Track};
+use crate::watcher::{EventStream, MediaWatcher};
 
 /// Internal player state representation for Windows implementation.
 ///

@@ -4,6 +4,7 @@
 //! media players across different platforms.
 
 use std::result;
+
 use thiserror::Error;
 
 /// Errors that can occur when using the media watcher.

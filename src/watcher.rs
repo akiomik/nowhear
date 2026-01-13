@@ -4,6 +4,10 @@
 //! for interacting with media players, and the [`MediaWatcherBuilder`] for creating
 //! platform-specific implementations.
 
+use std::future::Future;
+
+use futures::stream::BoxStream;
+
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 use crate::error::MediaWatcherError;
 use crate::error::Result;
@@ -14,8 +18,6 @@ use crate::platform::macos::MacOSMediaWatcher;
 #[cfg(target_os = "windows")]
 use crate::platform::windows::WindowsMediaWatcher;
 use crate::types::{MediaEvent, PlayerInfo};
-use futures::stream::BoxStream;
-use std::future::Future;
 
 /// Type alias for event stream returned by the media watcher.
 ///
