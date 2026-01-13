@@ -29,4 +29,4 @@ fmt:
   cargo fmt --all
 
 doc-build:
-  cargo build --no-deps
+  cargo doc --no-deps
