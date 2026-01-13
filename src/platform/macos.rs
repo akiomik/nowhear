@@ -1,18 +1,19 @@
 //! macOS-specific implementation using AppleScript.
 
-#[cfg(target_os = "macos")]
-use crate::error::{MediaWatcherError, Result};
-use crate::types::{MediaEvent, PlaybackState, PlayerInfo, Track};
-use crate::watcher::{EventStream, MediaWatcher};
-use futures::stream::Stream;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
+
+use futures::stream::Stream;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::time;
 use tokio_stream::wrappers::UnboundedReceiverStream;
+
+use crate::error::{MediaWatcherError, Result};
+use crate::types::{MediaEvent, PlaybackState, PlayerInfo, Track};
+use crate::watcher::{EventStream, MediaWatcher};
 
 /// Internal player state representation for macOS implementation.
 ///

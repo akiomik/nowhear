@@ -1,17 +1,18 @@
-#[cfg(target_os = "linux")]
-use crate::error::{MediaWatcherError, Result};
-use crate::types::{MediaEvent, PlaybackState, PlayerInfo, Track};
-use crate::watcher::{EventStream, MediaWatcher};
-use futures::stream::Stream;
-use mpris::{Metadata, PlaybackStatus as MprisPlaybackStatus, Player, PlayerFinder};
 use std::collections::HashMap;
 use std::future::Future;
 use std::string::ToString;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+
+use futures::stream::Stream;
+use mpris::{Metadata, PlaybackStatus as MprisPlaybackStatus, Player, PlayerFinder};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
+
+use crate::error::{MediaWatcherError, Result};
+use crate::types::{MediaEvent, PlaybackState, PlayerInfo, Track};
+use crate::watcher::{EventStream, MediaWatcher};
 
 /// Internal trait for abstracting player discovery mechanisms.
 ///
