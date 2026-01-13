@@ -5,9 +5,11 @@ use crate::watcher::{EventStream, MediaWatcher};
 use futures::stream::Stream;
 use mpris::{Metadata, PlaybackStatus as MprisPlaybackStatus, Player, PlayerFinder};
 use std::collections::HashMap;
+use std::future::Future;
 use std::string::ToString;
 use std::sync::Arc;
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -17,11 +19,9 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 /// for dependency injection in tests. It is not part of the public API.
 #[doc(hidden)]
 pub trait PlayerDiscoveryProvider: Send + Sync {
-    fn discover_players(&self) -> impl std::future::Future<Output = Result<Vec<String>>> + Send;
-    fn get_player_info(
-        &self,
-        player_name: &str,
-    ) -> impl std::future::Future<Output = Result<PlayerInfo>> + Send;
+    fn discover_players(&self) -> impl Future<Output = Result<Vec<String>>> + Send;
+    fn get_player_info(&self, player_name: &str)
+    -> impl Future<Output = Result<PlayerInfo>> + Send;
     fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send + 'static;
 }
 
@@ -103,10 +103,10 @@ impl PlayerDiscoveryProvider for MprisProvider {
         let (tx, rx) = mpsc::unbounded_channel();
 
         // Spawn a dedicated thread for MPRIS event monitoring
-        // We use std::thread because mpris::Player is not Send and cannot be used with tokio::spawn
-        std::thread::spawn(move || {
+        // NOTE: We use std::thread because mpris::Player is not Send and cannot be used with tokio::spawn
+        thread::spawn(move || {
             let mut monitor = PlayerMonitor::new();
-            let mut last_check = std::time::Instant::now();
+            let mut last_check = Instant::now();
 
             loop {
                 // Check for channel closure
@@ -118,12 +118,12 @@ impl PlayerDiscoveryProvider for MprisProvider {
                 if last_check.elapsed() >= Duration::from_millis(500) {
                     // Create a new finder instance for each iteration
                     let Ok(finder) = PlayerFinder::new() else {
-                        std::thread::sleep(Duration::from_millis(100));
+                        thread::sleep(Duration::from_millis(100));
                         continue;
                     };
 
                     let Ok(current_players) = finder.find_all() else {
-                        std::thread::sleep(Duration::from_millis(100));
+                        thread::sleep(Duration::from_millis(100));
                         continue;
                     };
 
@@ -137,11 +137,11 @@ impl PlayerDiscoveryProvider for MprisProvider {
                         }
                     }
 
-                    last_check = std::time::Instant::now();
+                    last_check = Instant::now();
                 }
 
                 // Small sleep to avoid busy waiting
-                std::thread::sleep(Duration::from_millis(100));
+                thread::sleep(Duration::from_millis(100));
             }
         });
 
@@ -422,6 +422,7 @@ const fn parse_playback_status(status: MprisPlaybackStatus) -> PlaybackState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::stream;
     use mpris::MetadataValue;
     use std::collections::HashMap;
 
@@ -456,7 +457,7 @@ mod tests {
         }
 
         fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send + 'static {
-            futures::stream::empty()
+            stream::empty()
         }
     }
 

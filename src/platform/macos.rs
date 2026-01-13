@@ -5,6 +5,8 @@ use crate::error::{MediaWatcherError, Result};
 use crate::types::{MediaEvent, PlaybackState, PlayerInfo, Track};
 use crate::watcher::{EventStream, MediaWatcher};
 use futures::stream::Stream;
+use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
@@ -34,10 +36,8 @@ pub trait PlayerStateProvider: Send + Sync {
     fn get_player_state(
         &self,
         player_name: &str,
-    ) -> impl std::future::Future<Output = Result<Option<PlayerState>>> + Send;
-    fn list_available_players(
-        &self,
-    ) -> impl std::future::Future<Output = Result<Vec<String>>> + Send;
+    ) -> impl Future<Output = Result<Option<PlayerState>>> + Send;
+    fn list_available_players(&self) -> impl Future<Output = Result<Vec<String>>> + Send;
 }
 
 /// AppleScript-based provider for macOS.
@@ -153,15 +153,15 @@ pub struct MacOSMediaWatcher<P: PlayerStateProvider = AppleScriptProvider> {
 }
 
 struct PlayerMonitor {
-    players: std::collections::HashMap<String, PlayerState>,
-    running: std::collections::HashMap<String, bool>,
+    players: HashMap<String, PlayerState>,
+    running: HashMap<String, bool>,
 }
 
 impl PlayerMonitor {
     fn new() -> Self {
         Self {
-            players: std::collections::HashMap::new(),
-            running: std::collections::HashMap::new(),
+            players: HashMap::new(),
+            running: HashMap::new(),
         }
     }
 
@@ -437,7 +437,6 @@ fn parse_apple_script_output(output: &str) -> Option<PlayerState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     /// Mock player state provider for testing.
     ///

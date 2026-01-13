@@ -4,8 +4,10 @@
 use crate::error::{MediaWatcherError, Result};
 use crate::types::{MediaEvent, PlaybackState, PlayerInfo, Track};
 use crate::watcher::{EventStream, MediaWatcher};
+use futures::future;
 use futures::stream::Stream;
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -38,13 +40,10 @@ pub struct PlayerState {
 /// for dependency injection in tests. It is not part of the public API.
 #[doc(hidden)]
 pub trait MediaSessionProvider: Send + Sync {
-    fn get_all_sessions(
-        &self,
-    ) -> impl std::future::Future<Output = Result<HashMap<String, PlayerState>>> + Send;
-    fn get_session_info(
-        &self,
-        session_id: &str,
-    ) -> impl std::future::Future<Output = Result<PlayerInfo>> + Send;
+    fn get_all_sessions(&self)
+    -> impl Future<Output = Result<HashMap<String, PlayerState>>> + Send;
+    fn get_session_info(&self, session_id: &str)
+    -> impl Future<Output = Result<PlayerInfo>> + Send;
     fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send + 'static;
 }
 
@@ -261,7 +260,7 @@ impl MediaSessionProvider for WindowsMediaControlProvider {
                     }
                 }
 
-                let results = futures::future::join_all(futures).await;
+                let results = future::join_all(futures).await;
 
                 for (session_id, result) in session_ids.into_iter().zip(results) {
                     if let Ok(state) = result {
@@ -468,6 +467,7 @@ const fn parse_playback_status(status: WinPlaybackStatus) -> PlaybackState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::stream;
 
     /// Mock media session provider for testing.
     struct MockMediaSessionProvider {
@@ -506,7 +506,7 @@ mod tests {
         }
 
         fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send + 'static {
-            futures::stream::empty()
+            stream::empty()
         }
     }
 

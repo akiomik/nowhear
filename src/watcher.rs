@@ -4,9 +4,18 @@
 //! for interacting with media players, and the [`MediaWatcherBuilder`] for creating
 //! platform-specific implementations.
 
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+use crate::error::MediaWatcherError;
 use crate::error::Result;
+#[cfg(target_os = "linux")]
+use crate::platform::linux::LinuxMediaWatcher;
+#[cfg(target_os = "macos")]
+use crate::platform::macos::MacOSMediaWatcher;
+#[cfg(target_os = "windows")]
+use crate::platform::windows::WindowsMediaWatcher;
 use crate::types::{MediaEvent, PlayerInfo};
 use futures::stream::BoxStream;
+use std::future::Future;
 
 /// Type alias for event stream returned by the media watcher.
 ///
@@ -54,7 +63,7 @@ pub trait MediaWatcher: Send + Sync {
     /// # Ok(())
     /// # }
     /// ```
-    fn list_players(&self) -> impl std::future::Future<Output = Result<Vec<String>>> + Send;
+    fn list_players(&self) -> impl Future<Output = Result<Vec<String>>> + Send;
 
     /// Gets detailed information about a specific player.
     ///
@@ -81,10 +90,7 @@ pub trait MediaWatcher: Send + Sync {
     /// # Ok(())
     /// # }
     /// ```
-    fn get_player(
-        &self,
-        player_name: &str,
-    ) -> impl std::future::Future<Output = Result<PlayerInfo>> + Send;
+    fn get_player(&self, player_name: &str) -> impl Future<Output = Result<PlayerInfo>> + Send;
 
     /// Creates an event stream that emits media events.
     ///
@@ -109,7 +115,7 @@ pub trait MediaWatcher: Send + Sync {
     /// # Ok(())
     /// # }
     /// ```
-    fn event_stream(&self) -> impl std::future::Future<Output = Result<EventStream>> + Send;
+    fn event_stream(&self) -> impl Future<Output = Result<EventStream>> + Send;
 }
 
 /// Platform-specific media watcher implementation.
@@ -137,11 +143,11 @@ pub trait MediaWatcher: Send + Sync {
 /// ```
 pub enum PlatformMediaWatcher {
     #[cfg(target_os = "linux")]
-    Linux(crate::platform::linux::LinuxMediaWatcher),
+    Linux(LinuxMediaWatcher),
     #[cfg(target_os = "macos")]
-    MacOS(crate::platform::macos::MacOSMediaWatcher),
+    MacOS(MacOSMediaWatcher),
     #[cfg(target_os = "windows")]
-    Windows(crate::platform::windows::WindowsMediaWatcher),
+    Windows(WindowsMediaWatcher),
 }
 
 impl MediaWatcher for PlatformMediaWatcher {
@@ -230,28 +236,24 @@ impl MediaWatcherBuilder {
     pub async fn build(self) -> Result<PlatformMediaWatcher> {
         #[cfg(target_os = "linux")]
         {
-            Ok(PlatformMediaWatcher::Linux(
-                crate::platform::linux::LinuxMediaWatcher::new()?,
-            ))
+            Ok(PlatformMediaWatcher::Linux(LinuxMediaWatcher::new()?))
         }
 
         #[cfg(target_os = "macos")]
         {
-            Ok(PlatformMediaWatcher::MacOS(
-                crate::platform::macos::MacOSMediaWatcher::new(),
-            ))
+            Ok(PlatformMediaWatcher::MacOS(MacOSMediaWatcher::new()))
         }
 
         #[cfg(target_os = "windows")]
         {
             Ok(PlatformMediaWatcher::Windows(
-                crate::platform::windows::WindowsMediaWatcher::new().await?,
+                WindowsMediaWatcher::new().await?,
             ))
         }
 
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         {
-            Err(crate::error::MediaWatcherError::UnsupportedPlatform)
+            Err(MediaWatcherError::UnsupportedPlatform)
         }
     }
 }
