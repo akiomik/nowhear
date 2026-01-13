@@ -99,11 +99,16 @@ impl PlayerDiscoveryProvider for MprisProvider {
     fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send + 'static {
         let (tx, rx) = mpsc::unbounded_channel();
 
-        // Spawn a dedicated thread for MPRIS event monitoring
-        // NOTE: We use std::thread because mpris::Player is not Send and cannot be used with tokio::spawn
+        // Spawn a dedicated thread for MPRIS event monitoring.
+        // NOTE: We use std::thread because mpris::Player and mpris::PlayerFinder are not Send.
+        //       They use Rc<PooledConnection> internally instead of Arc, which prevents them
+        //       from being shared across threads using Arc or used with tokio::spawn.
         thread::spawn(move || {
             let mut monitor = PlayerMonitor::new();
             let mut last_check = Instant::now();
+            // Cache the PlayerFinder to avoid recreating it on every poll cycle.
+            // This reduces D-Bus connection overhead.
+            let mut finder_cache: Option<PlayerFinder> = None;
 
             loop {
                 // Check for channel closure
@@ -113,13 +118,19 @@ impl PlayerDiscoveryProvider for MprisProvider {
 
                 // Poll for player updates every 500ms
                 if last_check.elapsed() >= Duration::from_millis(500) {
-                    // Create a new finder instance for each iteration
-                    let Ok(finder) = PlayerFinder::new() else {
+                    // Get or create the PlayerFinder instance
+                    if finder_cache.is_none() {
+                        finder_cache = PlayerFinder::new().ok();
+                    }
+
+                    let Some(finder) = &finder_cache else {
                         thread::sleep(Duration::from_millis(100));
                         continue;
                     };
 
                     let Ok(current_players) = finder.find_all() else {
+                        // Clear cache on error to retry connection next time
+                        finder_cache = None;
                         thread::sleep(Duration::from_millis(100));
                         continue;
                     };
