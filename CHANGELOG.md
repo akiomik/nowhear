@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- macOS: Duration support for Music.app and Spotify
+
 ### Changed
 
 - `MediaSource::get_player` now accepts `impl AsRef<str>` instead of `&str`, allowing more flexible string type usage (e.g., `String`, `&str`, `&String`, `Box<str>`)
