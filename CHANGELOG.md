@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - macOS: Duration support for Music.app and Spotify
+- macOS: Album artist support for Music.app and Spotify
+- macOS: Track number support for Music.app and Spotify
 
 ### Changed
 
