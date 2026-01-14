@@ -331,7 +331,8 @@ impl<P: PlayerStateProvider + 'static> MediaSource for MacOSMediaSource<P> {
         self.provider.list_available_players().await
     }
 
-    async fn get_player(&self, player_name: &str) -> Result<PlayerInfo> {
+    async fn get_player(&self, player_name: impl AsRef<str> + Send) -> Result<PlayerInfo> {
+        let player_name = player_name.as_ref();
         if let Some(player_state) = self.provider.get_player_state(player_name).await? {
             Ok(PlayerInfo {
                 player_name: player_name.to_string(),
