@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `MediaSource::get_player` now accepts `impl AsRef<str>` instead of `&str`, allowing more flexible string type usage (e.g., `String`, `&str`, `&String`, `Box<str>`)
+- macOS: Extracted AppleScript code into separate `.applescript` files for better maintainability
 
 ## [0.1.0] - 2026-01-13
 
