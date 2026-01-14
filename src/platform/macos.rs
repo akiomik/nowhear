@@ -346,9 +346,23 @@ fn parse_apple_script_output(output: &str) -> Option<PlayerState> {
     let parts: Vec<&str> = output.split('\t').collect();
 
     if parts.len() >= 3 {
-        // Parse duration (in seconds) from the 7th field if available
-        let duration = if parts.len() >= 7 {
-            parts[6]
+        // Parse album artist from the 4th field if available
+        let album_artist = if parts.len() >= 4 && !parts[3].trim().is_empty() {
+            Some(vec![parts[3].to_string()])
+        } else {
+            None
+        };
+
+        // Parse track number from the 5th field if available
+        let track_number = if parts.len() >= 5 {
+            parts[4].trim().parse::<u32>().ok().filter(|&n| n > 0)
+        } else {
+            None
+        };
+
+        // Parse duration (in seconds) from the 9th field if available
+        let duration = if parts.len() >= 9 {
+            parts[8]
                 .trim()
                 .parse::<f64>()
                 .ok()
@@ -365,16 +379,16 @@ fn parse_apple_script_output(output: &str) -> Option<PlayerState> {
             } else {
                 Some(parts[2].to_string())
             },
-            album_artist: None,
-            track_number: None,
+            album_artist,
+            track_number,
             duration,
             art_url: None,
         };
 
-        // Parse the playback state from the 4th field if available
-        let playback_state = if parts.len() >= 4 {
+        // Parse the playback state from the 6th field if available
+        let playback_state = if parts.len() >= 6 {
             #[allow(clippy::match_same_arms)]
-            match parts[3].trim().to_lowercase().as_str() {
+            match parts[5].trim().to_lowercase().as_str() {
                 "playing" | "fast forwarding" | "rewinding" => PlaybackState::Playing,
                 "paused" => PlaybackState::Paused,
                 "stopped" => PlaybackState::Stopped,
@@ -384,9 +398,9 @@ fn parse_apple_script_output(output: &str) -> Option<PlayerState> {
             PlaybackState::Playing // Default if state is not provided
         };
 
-        // Parse position (in seconds) from the 5th field if available
-        let position = if parts.len() >= 5 {
-            parts[4]
+        // Parse position (in seconds) from the 7th field if available
+        let position = if parts.len() >= 7 {
+            parts[6]
                 .trim()
                 .parse::<f64>()
                 .ok()
@@ -395,9 +409,9 @@ fn parse_apple_script_output(output: &str) -> Option<PlayerState> {
             None
         };
 
-        // Parse volume from the 6th field if available
-        let volume = if parts.len() >= 6 {
-            parts[5].trim().parse::<f64>().ok().map(|vol| vol / 100.0) // Convert 0-100 to 0.0-1.0
+        // Parse volume from the 8th field if available
+        let volume = if parts.len() >= 8 {
+            parts[7].trim().parse::<f64>().ok().map(|vol| vol / 100.0) // Convert 0-100 to 0.0-1.0
         } else {
             None
         };
@@ -617,7 +631,8 @@ mod tests {
 
     #[test]
     fn test_parse_applescript_output_with_full_info() {
-        let output = "Bohemian Rhapsody\tQueen\tA Night at the Opera\tplaying\t123.45\t75\t354.5";
+        let output =
+            "Bohemian Rhapsody\tQueen\tA Night at the Opera\tQueen\t11\tplaying\t123.45\t75\t354.5";
         let player_state = parse_apple_script_output(output).expect("should success");
 
         assert_eq!(
@@ -627,8 +642,8 @@ mod tests {
                     title: "Bohemian Rhapsody".to_string(),
                     artist: vec!["Queen".to_string()],
                     album: Some("A Night at the Opera".to_string()),
-                    album_artist: None,
-                    track_number: None,
+                    album_artist: Some(vec!["Queen".to_string()]),
+                    track_number: Some(11),
                     duration: Some(Duration::from_secs_f64(354.5)),
                     art_url: None
                 },
@@ -641,7 +656,7 @@ mod tests {
 
     #[test]
     fn test_parse_applescript_output_with_empty_album() {
-        let output = "Test Song\tTest Artist\t\tplaying\t0\t100\t180";
+        let output = "Test Song\tTest Artist\t\tTest Artist\t1\tplaying\t0\t100\t180";
         let player_state = parse_apple_script_output(output).expect("should success");
 
         assert_eq!(
@@ -651,8 +666,8 @@ mod tests {
                     title: "Test Song".to_string(),
                     artist: vec!["Test Artist".to_string()],
                     album: None,
-                    album_artist: None,
-                    track_number: None,
+                    album_artist: Some(vec!["Test Artist".to_string()]),
+                    track_number: Some(1),
                     duration: Some(Duration::from_secs(180)),
                     art_url: None
                 },
@@ -665,7 +680,7 @@ mod tests {
 
     #[test]
     fn test_parse_applescript_output_with_paused_state() {
-        let output = "Some Track\tSome Artist\tSome Album\tpaused\t60.5\t50\t240";
+        let output = "Some Track\tSome Artist\tSome Album\tSome Artist\t5\tpaused\t60.5\t50\t240";
         let player_state = parse_apple_script_output(output).expect("should success");
 
         assert_eq!(
@@ -675,8 +690,8 @@ mod tests {
                     title: "Some Track".to_string(),
                     artist: vec!["Some Artist".to_string()],
                     album: Some("Some Album".to_string()),
-                    album_artist: None,
-                    track_number: None,
+                    album_artist: Some(vec!["Some Artist".to_string()]),
+                    track_number: Some(5),
                     duration: Some(Duration::from_secs(240)),
                     art_url: None
                 },
@@ -689,7 +704,7 @@ mod tests {
 
     #[test]
     fn test_parse_applescript_output_with_special_characters() {
-        let output = "Song & Title (Remix)\tArtist: Name\tAlbum - Edition\tplaying\t30\t80\t200";
+        let output = "Song & Title (Remix)\tArtist: Name\tAlbum - Edition\tVarious Artists\t3\tplaying\t30\t80\t200";
         let player_state = parse_apple_script_output(output).expect("should success");
 
         assert_eq!(
@@ -699,8 +714,8 @@ mod tests {
                     title: "Song & Title (Remix)".to_string(),
                     artist: vec!["Artist: Name".to_string()],
                     album: Some("Album - Edition".to_string()),
-                    album_artist: None,
-                    track_number: None,
+                    album_artist: Some(vec!["Various Artists".to_string()]),
+                    track_number: Some(3),
                     duration: Some(Duration::from_secs(200)),
                     art_url: None
                 },
@@ -713,7 +728,8 @@ mod tests {
 
     #[test]
     fn test_parse_applescript_output_with_unicode() {
-        let output = "春よ、来い\t松任谷由実\tThe Dancing Sun\tplaying\t120\t65\t265";
+        let output =
+            "春よ、来い\t松任谷由実\tThe Dancing Sun\t松任谷由実\t7\tplaying\t120\t65\t265";
         let player_state = parse_apple_script_output(output).expect("should success");
 
         assert_eq!(
@@ -723,8 +739,8 @@ mod tests {
                     title: "春よ、来い".to_string(),
                     artist: vec!["松任谷由実".to_string()],
                     album: Some("The Dancing Sun".to_string()),
-                    album_artist: None,
-                    track_number: None,
+                    album_artist: Some(vec!["松任谷由実".to_string()]),
+                    track_number: Some(7),
                     duration: Some(Duration::from_secs(265)),
                     art_url: None
                 },
@@ -761,8 +777,8 @@ mod tests {
 
     #[test]
     fn test_parse_applescript_output_without_position_volume() {
-        // Test when only 4 fields are provided (no position and volume)
-        let output = "Title\tArtist\tAlbum\tplaying";
+        // Test when only 6 fields are provided (no position and volume)
+        let output = "Title\tArtist\tAlbum\tArtist\t2\tplaying";
         let player_state = parse_apple_script_output(output).expect("should success");
 
         assert_eq!(
@@ -772,8 +788,8 @@ mod tests {
                     title: "Title".to_string(),
                     artist: vec!["Artist".to_string()],
                     album: Some("Album".to_string()),
-                    album_artist: None,
-                    track_number: None,
+                    album_artist: Some(vec!["Artist".to_string()]),
+                    track_number: Some(2),
                     duration: None,
                     art_url: None
                 },
@@ -786,8 +802,7 @@ mod tests {
 
     #[test]
     fn test_parse_applescript_output_with_whitespace() {
-        let output =
-            "  Trimmed Title  \t  Trimmed Artist  \t  Trimmed Album  \tplaying\t10\t90\t150";
+        let output = "  Trimmed Title  \t  Trimmed Artist  \t  Trimmed Album  \t  Trimmed Artist  \t4\tplaying\t10\t90\t150";
         let player_state = parse_apple_script_output(output).expect("should success");
 
         // Note: The function doesn't trim individual fields, it preserves whitespace
@@ -798,8 +813,8 @@ mod tests {
                     title: "  Trimmed Title  ".to_string(),
                     artist: vec!["  Trimmed Artist  ".to_string()],
                     album: Some("  Trimmed Album  ".to_string()),
-                    album_artist: None,
-                    track_number: None,
+                    album_artist: Some(vec!["  Trimmed Artist  ".to_string()]),
+                    track_number: Some(4),
                     duration: Some(Duration::from_secs(150)),
                     art_url: None
                 },
@@ -839,7 +854,7 @@ mod tests {
     #[test]
     fn test_parse_applescript_output_with_uppercase_state() {
         // Test case insensitivity
-        let output = "Title\tArtist\tAlbum\tPLAYING\t45\t55\t300";
+        let output = "Title\tArtist\tAlbum\tArtist\t8\tPLAYING\t45\t55\t300";
         let player_state = parse_apple_script_output(output).expect("should success");
 
         assert_eq!(player_state.playback_state, PlaybackState::Playing);
@@ -848,7 +863,7 @@ mod tests {
 
     #[test]
     fn test_parse_applescript_output_with_stopped_state() {
-        let output = "Title\tArtist\tAlbum\tstopped\t0\t0\t180";
+        let output = "Title\tArtist\tAlbum\tArtist\t9\tstopped\t0\t0\t180";
         let player_state = parse_apple_script_output(output).expect("should success");
 
         assert_eq!(player_state.playback_state, PlaybackState::Stopped);
@@ -858,11 +873,61 @@ mod tests {
     #[test]
     fn test_parse_applescript_output_with_unknown_state() {
         // Test unknown state defaults to Playing
-        let output = "Title\tArtist\tAlbum\tunknown\t0\t0\t120";
+        let output = "Title\tArtist\tAlbum\tArtist\t10\tunknown\t0\t0\t120";
         let player_state = parse_apple_script_output(output).expect("should success");
 
         assert_eq!(player_state.playback_state, PlaybackState::Playing);
         assert_eq!(player_state.track.duration, Some(Duration::from_secs(120)));
+    }
+
+    #[test]
+    fn test_parse_applescript_output_with_empty_album_artist() {
+        // Test when album artist is empty string (Spotify case when not available)
+        let output = "Title\tArtist\tAlbum\t\t0\tplaying\t30\t80\t200";
+        let player_state = parse_apple_script_output(output).expect("should success");
+
+        assert_eq!(
+            player_state,
+            PlayerState {
+                track: Track {
+                    title: "Title".to_string(),
+                    artist: vec!["Artist".to_string()],
+                    album: Some("Album".to_string()),
+                    album_artist: None, // Empty string should be treated as None
+                    track_number: None, // 0 should be filtered out
+                    duration: Some(Duration::from_secs(200)),
+                    art_url: None
+                },
+                playback_state: PlaybackState::Playing,
+                position: Some(Duration::from_secs(30)),
+                volume: Some(0.8),
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_applescript_output_with_different_album_artist() {
+        // Test when album artist is different from track artist (compilation album)
+        let output = "Track Title\tTrack Artist\tCompilation Album\tVarious Artists\t12\tplaying\t45\t70\t180";
+        let player_state = parse_apple_script_output(output).expect("should success");
+
+        assert_eq!(
+            player_state,
+            PlayerState {
+                track: Track {
+                    title: "Track Title".to_string(),
+                    artist: vec!["Track Artist".to_string()],
+                    album: Some("Compilation Album".to_string()),
+                    album_artist: Some(vec!["Various Artists".to_string()]),
+                    track_number: Some(12),
+                    duration: Some(Duration::from_secs(180)),
+                    art_url: None
+                },
+                playback_state: PlaybackState::Playing,
+                position: Some(Duration::from_secs(45)),
+                volume: Some(0.7),
+            }
+        );
     }
 
     // PlayerMonitor tests
