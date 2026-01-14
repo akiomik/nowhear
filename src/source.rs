@@ -92,7 +92,10 @@ pub trait MediaSource: Send + Sync {
     /// # Ok(())
     /// # }
     /// ```
-    fn get_player(&self, player_name: &str) -> impl Future<Output = Result<PlayerInfo>> + Send;
+    fn get_player(
+        &self,
+        player_name: impl AsRef<str> + Send,
+    ) -> impl Future<Output = Result<PlayerInfo>> + Send;
 
     /// Creates an event stream that emits media events.
     ///
@@ -166,7 +169,8 @@ impl MediaSource for PlatformMediaSource {
         }
     }
 
-    async fn get_player(&self, player_name: &str) -> Result<PlayerInfo> {
+    async fn get_player(&self, player_name: impl AsRef<str> + Send) -> Result<PlayerInfo> {
+        let player_name = player_name.as_ref();
         match &self.0 {
             #[cfg(target_os = "linux")]
             PlatformMediaSourceInner::Linux(w) => w.get_player(player_name).await,

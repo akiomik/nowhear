@@ -442,8 +442,8 @@ impl<P: MediaSessionProvider + 'static> MediaSource for WindowsMediaSource<P> {
         Ok(sessions.keys().cloned().collect())
     }
 
-    async fn get_player(&self, player_name: &str) -> Result<PlayerInfo> {
-        self.provider.get_session_info(player_name).await
+    async fn get_player(&self, player_name: impl AsRef<str> + Send) -> Result<PlayerInfo> {
+        self.provider.get_session_info(player_name.as_ref()).await
     }
 
     async fn event_stream(&self) -> Result<EventStream> {
