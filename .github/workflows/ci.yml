@@ -194,3 +194,15 @@ jobs:
 
       - name: Check MSRV
         run: cargo check --all-features
+
+  biome:
+    name: Biome
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Biome
+        uses: biomejs/setup-biome@v2
+
+      - name: Run Biome
+        run: biome ci src
