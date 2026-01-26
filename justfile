@@ -33,3 +33,7 @@ fmt:
 
 doc-build:
   cargo doc --no-deps
+
+[macos]
+run-jxa app:
+  osascript -l JavaScript "src/platform/jxa/{{app}}.js"
