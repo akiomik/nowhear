@@ -378,6 +378,7 @@ struct AppleScriptPlayerState {
     track_artist: String,
     track_album: String,
     track_album_artist: String,
+    track_album_artwork_url: Option<String>,
     track_number: u32,
     track_duration: f64,
 }
@@ -399,7 +400,7 @@ impl AppleScriptPlayerState {
             album_artist: Some(vec![self.track_album_artist]),
             track_number: Some(self.track_number),
             duration: Some(Duration::from_secs_f64(self.track_duration)),
-            art_url: None,
+            art_url: self.track_album_artwork_url,
         }
     }
 
@@ -413,7 +414,7 @@ impl AppleScriptPlayerState {
             album_artist: Some(vec![self.track_album_artist]),
             track_number: Some(self.track_number),
             duration: Some(Duration::from_millis(self.track_duration as u64)),
-            art_url: None,
+            art_url: self.track_album_artwork_url,
         }
     }
 
@@ -1037,6 +1038,7 @@ mod tests {
                 track_artist: "Test Artist".to_string(),
                 track_album: "Test Album".to_string(),
                 track_album_artist: "Test Album Artist".to_string(),
+                track_album_artwork_url: None,
                 track_number: 3,
                 track_duration: 180.0,
             }
@@ -1134,6 +1136,43 @@ mod tests {
     }
 
     #[test]
+    fn test_applescript_player_state_deserialize_track_album_artwork_url() -> Result<()> {
+        let json = r#"{
+            "playerState": "playing",
+            "playerPosition": 45.5,
+            "soundVolume": 80,
+            "trackName": "Test Song",
+            "trackArtist": "Test Artist",
+            "trackAlbum": "Test Album",
+            "trackAlbumArtist": "Test Album Artist",
+            "trackAlbumArtworkUrl": "https://example.com/image/deadbeef",
+            "trackNumber": 3,
+            "trackDuration": 180.0
+        }"#;
+
+        let state: AppleScriptPlayerState =
+            serde_json::from_str(json).map_err(|e| MediaSourceError::ParseError(e.to_string()))?;
+
+        assert_eq!(
+            state,
+            AppleScriptPlayerState {
+                player_state: AppleScriptPlaybackState::Playing,
+                player_position: 45.5,
+                sound_volume: 80,
+                track_name: "Test Song".to_string(),
+                track_artist: "Test Artist".to_string(),
+                track_album: "Test Album".to_string(),
+                track_album_artist: "Test Album Artist".to_string(),
+                track_album_artwork_url: Some("https://example.com/image/deadbeef".to_owned()),
+                track_number: 3,
+                track_duration: 180.0,
+            }
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn test_applescript_playback_state_conversion() {
         let test_cases = vec![
             (AppleScriptPlaybackState::Playing, PlaybackState::Playing),
@@ -1155,6 +1194,7 @@ mod tests {
                 track_artist: "Artist".to_string(),
                 track_album: "Album".to_string(),
                 track_album_artist: "Album Artist".to_string(),
+                track_album_artwork_url: None,
                 track_number: 1,
                 track_duration: 100.0,
             };
@@ -1173,6 +1213,7 @@ mod tests {
             track_artist: "Queen".to_string(),
             track_album: "A Night at the Opera".to_string(),
             track_album_artist: "Queen".to_string(),
+            track_album_artwork_url: None,
             track_number: 11,
             track_duration: 354.0, // seconds
         };
@@ -1203,6 +1244,7 @@ mod tests {
             track_artist: "Led Zeppelin".to_string(),
             track_album: "Led Zeppelin IV".to_string(),
             track_album_artist: "Led Zeppelin".to_string(),
+            track_album_artwork_url: Some("https://example.com/image/deadbeef".to_owned()),
             track_number: 4,
             track_duration: 482_000.0, // milliseconds
         };
@@ -1218,7 +1260,7 @@ mod tests {
                 album_artist: Some(vec!["Led Zeppelin".to_string()]),
                 track_number: Some(4),
                 duration: Some(Duration::from_millis(482_000)),
-                art_url: None,
+                art_url: Some("https://example.com/image/deadbeef".to_owned()),
             }
         );
     }
@@ -1233,6 +1275,7 @@ mod tests {
             track_artist: "Test Artist".to_string(),
             track_album: "Test Album".to_string(),
             track_album_artist: "Test Album Artist".to_string(),
+            track_album_artwork_url: None,
             track_number: 2,
             track_duration: 240.0,
         };
@@ -1268,6 +1311,7 @@ mod tests {
             track_artist: "Spotify Artist".to_string(),
             track_album: "Spotify Album".to_string(),
             track_album_artist: "Spotify Album Artist".to_string(),
+            track_album_artwork_url: Some("https://example.com/image/deadbeef".to_owned()),
             track_number: 7,
             track_duration: 195_000.0, // milliseconds for Spotify
         };
@@ -1284,7 +1328,7 @@ mod tests {
                     album_artist: Some(vec!["Spotify Album Artist".to_string()]),
                     track_number: Some(7),
                     duration: Some(Duration::from_millis(195_000)),
-                    art_url: None,
+                    art_url: Some("https://example.com/image/deadbeef".to_owned()),
                 },
                 playback_state: PlaybackState::Playing,
                 position: Some(Duration::from_secs_f64(65.25)),
@@ -1304,6 +1348,7 @@ mod tests {
             track_artist: "Artist".to_string(),
             track_album: "Album".to_string(),
             track_album_artist: "Album Artist".to_string(),
+            track_album_artwork_url: None,
             track_number: 1,
             track_duration: 180.0, // 180 seconds
         };
@@ -1317,6 +1362,7 @@ mod tests {
             track_artist: "Artist".to_string(),
             track_album: "Album".to_string(),
             track_album_artist: "Album Artist".to_string(),
+            track_album_artwork_url: Some("https://example.com/image/deadbeef".to_owned()),
             track_number: 1,
             track_duration: 180_000.0, // 180000 milliseconds = 180 seconds
         };

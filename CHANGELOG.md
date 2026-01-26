@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- macOS: Album artwork url support for Spotify
+
 ### Changed
 
 - macOS: Switched from AppleScript to JXA (JavaScript for Automation) for improved performance

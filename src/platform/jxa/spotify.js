@@ -10,6 +10,7 @@ if (app.running()) {
 			trackArtist: app.currentTrack.artist(),
 			trackAlbum: app.currentTrack.album(),
 			trackAlbumArtist: app.currentTrack.albumArtist(),
+			trackAlbumArtworkUrl: app.currentTrack.artworkUrl(),
 			trackNumber: app.currentTrack.trackNumber(),
 			trackDuration: app.currentTrack.duration(),
 		});
