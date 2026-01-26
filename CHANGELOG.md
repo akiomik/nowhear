@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- macOS: Switched from AppleScript to JXA (JavaScript for Automation) for improved performance
+
 ## [0.1.1] - 2026-01-14
 
 ### Added

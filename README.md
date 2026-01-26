@@ -21,7 +21,7 @@ Cross-platform library for monitoring media playback information in Rust.
 | Platform | API | Supported Players |
 |----------|-----|-------------------|
 | **Linux** | MPRIS (D-Bus) | Spotify, VLC, Rhythmbox, Chromium, Firefox, and any MPRIS-compatible player |
-| **macOS** | AppleScript | Music.app, Spotify |
+| **macOS** | AppleScript (JXA) | Music.app, Spotify |
 | **Windows** | Windows Media Control | Spotify, Windows Media Player, VLC, iTunes, Chrome/Edge, and any SMTC-compatible app |
 
 ## Installation

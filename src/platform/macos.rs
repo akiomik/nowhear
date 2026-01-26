@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::stream::Stream;
+use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::time;
@@ -71,24 +72,28 @@ impl PlayerStateProvider for AppleScriptProvider {
 
 impl AppleScriptProvider {
     async fn get_music_app_state() -> Result<Option<PlayerState>> {
-        let script = include_str!("applescript/music.applescript");
+        let script = include_str!("jxa/music.js");
 
         let output = execute_applescript(script).await?;
         if output.is_empty() {
             Ok(None)
         } else {
-            Ok(AppleScriptFields::parse(&output).map(|f| f.to_music_player_state()))
+            let jxa_state: AppleScriptPlayerState = serde_json::from_str(&output)
+                .map_err(|e| MediaSourceError::ParseError(e.to_string()))?;
+            Ok(Some(jxa_state.into_music_player_state()))
         }
     }
 
     async fn get_spotify_state() -> Result<Option<PlayerState>> {
-        let script = include_str!("applescript/spotify.applescript");
+        let script = include_str!("jxa/spotify.js");
 
         let output = execute_applescript(script).await?;
         if output.is_empty() {
             Ok(None)
         } else {
-            Ok(AppleScriptFields::parse(&output).map(|f| f.to_spotify_player_state()))
+            let jxa_state: AppleScriptPlayerState = serde_json::from_str(&output)
+                .map_err(|e| MediaSourceError::ParseError(e.to_string()))?;
+            Ok(Some(jxa_state.into_spotify_player_state()))
         }
     }
 }
@@ -324,6 +329,8 @@ impl<P: PlayerStateProvider + 'static> MediaSource for MacOSMediaSource<P> {
 
 async fn execute_applescript(script: &str) -> Result<String> {
     let output = Command::new("osascript")
+        .arg("-l")
+        .arg("JavaScript")
         .arg("-e")
         .arg(script)
         .output()
@@ -342,156 +349,99 @@ async fn execute_applescript(script: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Structured representation of AppleScript output fields.
-///
-/// This structure provides a clean abstraction over the tab-separated
-/// output from AppleScript, making it easier to parse and test individual fields.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct AppleScriptFields<'a> {
-    parts: Vec<&'a str>,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+enum AppleScriptPlaybackState {
+    #[serde(rename = "stopped")]
+    Stopped,
+    #[serde(rename = "playing")]
+    Playing,
+    #[serde(rename = "paused")]
+    Paused,
+    #[serde(rename = "fast forwarding")]
+    FastForwarding,
+    #[serde(rename = "rewinding")]
+    Rewinding,
 }
 
-impl<'a> AppleScriptFields<'a> {
-    /// Parse tab-separated AppleScript output into structured fields.
-    fn parse(output: &'a str) -> Option<Self> {
-        let parts: Vec<&str> = output.split('\t').collect();
-        if parts.len() >= 3 {
-            Some(Self { parts })
-        } else {
-            None
+/// Intermediate representation of player state from AppleScript (JXA).
+///
+/// This struct is used to deserialize JSON output from JXA scripts that query
+/// Music.app or Spotify. It serves as a bridge between the AppleScript layer
+/// and the internal [`PlayerState`] representation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppleScriptPlayerState {
+    player_state: AppleScriptPlaybackState,
+    player_position: f64,
+    sound_volume: usize,
+    track_name: String,
+    track_artist: String,
+    track_album: String,
+    track_album_artist: String,
+    track_number: u32,
+    track_duration: f64,
+}
+
+impl AppleScriptPlayerState {
+    pub const fn playback_state(&self) -> PlaybackState {
+        match self.player_state {
+            AppleScriptPlaybackState::Paused => PlaybackState::Paused,
+            AppleScriptPlaybackState::Stopped => PlaybackState::Stopped,
+            _ => PlaybackState::Playing,
         }
     }
 
-    /// Get the track title.
-    fn title(&self) -> &str {
-        self.parts[0]
-    }
-
-    /// Get the track artist.
-    fn artist(&self) -> &str {
-        self.parts[1]
-    }
-
-    /// Get the album name, or None if empty.
-    fn album(&self) -> Option<&str> {
-        if self.parts[2].is_empty() {
-            None
-        } else {
-            Some(self.parts[2])
-        }
-    }
-
-    /// Get the album artist, or None if not available or empty.
-    fn album_artist(&self) -> Option<&str> {
-        self.parts.get(3).filter(|s| !s.trim().is_empty()).copied()
-    }
-
-    /// Get the track number, or None if not available or zero.
-    fn track_number(&self) -> Option<u32> {
-        self.parts
-            .get(4)?
-            .trim()
-            .parse::<u32>()
-            .ok()
-            .filter(|&n| n > 0)
-    }
-
-    /// Get the playback state.
-    fn playback_state(&self) -> PlaybackState {
-        self.parts.get(5).map_or(PlaybackState::Playing, |s| {
-            #[allow(clippy::match_same_arms)]
-            match s.trim().to_lowercase().as_str() {
-                "playing" | "fast forwarding" | "rewinding" => PlaybackState::Playing,
-                "paused" => PlaybackState::Paused,
-                "stopped" => PlaybackState::Stopped,
-                _ => PlaybackState::Playing,
-            }
-        })
-    }
-
-    /// Get the playback position in seconds.
-    fn position(&self) -> Option<Duration> {
-        self.parts
-            .get(6)?
-            .trim()
-            .parse::<f64>()
-            .ok()
-            .map(Duration::from_secs_f64)
-    }
-
-    /// Get the volume as a value between 0.0 and 1.0.
-    fn volume(&self) -> Option<f64> {
-        self.parts
-            .get(7)?
-            .trim()
-            .parse::<f64>()
-            .ok()
-            .map(|vol| vol / 100.0)
-    }
-
-    /// Get the track duration in seconds (for Music.app).
-    fn duration_in_seconds(&self) -> Option<Duration> {
-        self.parts
-            .get(8)?
-            .trim()
-            .parse::<f64>()
-            .ok()
-            .map(Duration::from_secs_f64)
-    }
-
-    /// Get the track duration in milliseconds (for Spotify).
-    fn duration_in_millis(&self) -> Option<Duration> {
-        self.parts
-            .get(8)?
-            .trim()
-            .parse::<u64>()
-            .ok()
-            .map(Duration::from_millis)
-    }
-
-    /// Convert fields to a `Track` struct for Music.app.
-    fn to_music_track(&self) -> Track {
+    pub fn into_music_track(self) -> Track {
         Track {
-            title: self.title().to_string(),
-            artist: vec![self.artist().to_string()],
-            album: self.album().map(String::from),
-            album_artist: self.album_artist().map(|s| vec![s.to_string()]),
-            track_number: self.track_number(),
-            duration: self.duration_in_seconds(),
+            title: self.track_name,
+            artist: vec![self.track_artist],
+            album: Some(self.track_album),
+            album_artist: Some(vec![self.track_album_artist]),
+            track_number: Some(self.track_number),
+            duration: Some(Duration::from_secs_f64(self.track_duration)),
             art_url: None,
         }
     }
 
-    /// Convert fields to a `Track` struct for Spotify.
-    fn to_spotify_track(&self) -> Track {
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_sign_loss)]
+    pub fn into_spotify_track(self) -> Track {
         Track {
-            title: self.title().to_string(),
-            artist: vec![self.artist().to_string()],
-            album: self.album().map(String::from),
-            album_artist: self.album_artist().map(|s| vec![s.to_string()]),
-            track_number: self.track_number(),
-            duration: self.duration_in_millis(),
+            title: self.track_name,
+            artist: vec![self.track_artist],
+            album: Some(self.track_album),
+            album_artist: Some(vec![self.track_album_artist]),
+            track_number: Some(self.track_number),
+            duration: Some(Duration::from_millis(self.track_duration as u64)),
             art_url: None,
         }
     }
 
-    /// Convert fields to a `PlayerState` struct for Music.app.
-    fn to_music_player_state(&self) -> PlayerState {
+    #[allow(clippy::cast_precision_loss)]
+    pub fn into_music_player_state(self) -> PlayerState {
+        let player_position = Duration::from_secs_f64(self.player_position);
+        let sound_volume = self.sound_volume as f64;
+        let playback_state = self.playback_state();
+
         PlayerState {
-            track: self.to_music_track(),
-            playback_state: self.playback_state(),
-            position: self.position(),
-            volume: self.volume(),
+            track: self.into_music_track(),
+            playback_state,
+            position: Some(player_position),
+            volume: Some(sound_volume),
         }
     }
 
-    /// Convert fields to a `PlayerState` struct for Spotify.
-    fn to_spotify_player_state(&self) -> PlayerState {
+    #[allow(clippy::cast_precision_loss)]
+    pub fn into_spotify_player_state(self) -> PlayerState {
+        let player_position = Duration::from_secs_f64(self.player_position);
+        let sound_volume = self.sound_volume as f64;
+        let playback_state = self.playback_state();
+
         PlayerState {
-            track: self.to_spotify_track(),
-            playback_state: self.playback_state(),
-            position: self.position(),
-            volume: self.volume(),
+            track: self.into_spotify_track(),
+            playback_state,
+            position: Some(player_position),
+            volume: Some(sound_volume),
         }
     }
 }
@@ -696,289 +646,6 @@ mod tests {
         Ok(())
     }
 
-    // AppleScriptFields tests
-
-    #[test]
-    fn test_parse_returns_none_for_insufficient_fields() {
-        assert_eq!(AppleScriptFields::parse(""), None);
-        assert_eq!(AppleScriptFields::parse("Title"), None);
-        assert_eq!(AppleScriptFields::parse("Title\tArtist"), None);
-    }
-
-    #[test]
-    fn test_parse_succeeds_with_minimum_fields() {
-        let fields = AppleScriptFields::parse("Title\tArtist\tAlbum").expect("should parse");
-        assert_eq!(fields.title(), "Title");
-        assert_eq!(fields.artist(), "Artist");
-        assert_eq!(fields.album(), Some("Album"));
-    }
-
-    #[test]
-    fn test_title_and_artist_always_available() {
-        let fields = AppleScriptFields::parse("My Song\tMy Artist\t").expect("should parse");
-        assert_eq!(fields.title(), "My Song");
-        assert_eq!(fields.artist(), "My Artist");
-    }
-
-    #[test]
-    fn test_album_returns_none_when_empty() {
-        let fields = AppleScriptFields::parse("Title\tArtist\t").expect("should parse");
-        assert_eq!(fields.album(), None);
-    }
-
-    #[test]
-    fn test_album_returns_some_when_present() {
-        let fields = AppleScriptFields::parse("Title\tArtist\tAlbum Name").expect("should parse");
-        assert_eq!(fields.album(), Some("Album Name"));
-    }
-
-    #[test]
-    fn test_album_artist_returns_none_when_missing() {
-        let fields = AppleScriptFields::parse("Title\tArtist\tAlbum").expect("should parse");
-        assert_eq!(fields.album_artist(), None);
-    }
-
-    #[test]
-    fn test_album_artist_returns_none_when_empty() {
-        let fields = AppleScriptFields::parse("Title\tArtist\tAlbum\t").expect("should parse");
-        assert_eq!(fields.album_artist(), None);
-    }
-
-    #[test]
-    fn test_album_artist_returns_some_when_present() {
-        let fields =
-            AppleScriptFields::parse("Title\tArtist\tAlbum\tAlbum Artist").expect("should parse");
-        assert_eq!(fields.album_artist(), Some("Album Artist"));
-    }
-
-    #[test]
-    fn test_track_number_returns_none_when_missing() {
-        let fields =
-            AppleScriptFields::parse("Title\tArtist\tAlbum\tArtist").expect("should parse");
-        assert_eq!(fields.track_number(), None);
-    }
-
-    #[test]
-    fn test_track_number_returns_none_when_zero() {
-        let fields =
-            AppleScriptFields::parse("Title\tArtist\tAlbum\tArtist\t0").expect("should parse");
-        assert_eq!(fields.track_number(), None);
-    }
-
-    #[test]
-    fn test_track_number_returns_some_when_valid() {
-        let fields =
-            AppleScriptFields::parse("Title\tArtist\tAlbum\tArtist\t5").expect("should parse");
-        assert_eq!(fields.track_number(), Some(5));
-    }
-
-    #[test]
-    fn test_playback_state_defaults_to_playing() {
-        let fields = AppleScriptFields::parse("Title\tArtist\tAlbum").expect("should parse");
-        assert_eq!(fields.playback_state(), PlaybackState::Playing);
-    }
-
-    #[test]
-    fn test_playback_state_playing() {
-        let fields =
-            AppleScriptFields::parse("Title\tArtist\tAlbum\t\t\tplaying").expect("should parse");
-        assert_eq!(fields.playback_state(), PlaybackState::Playing);
-    }
-
-    #[test]
-    fn test_playback_state_paused() {
-        let fields =
-            AppleScriptFields::parse("Title\tArtist\tAlbum\t\t\tpaused").expect("should parse");
-        assert_eq!(fields.playback_state(), PlaybackState::Paused);
-    }
-
-    #[test]
-    fn test_playback_state_stopped() {
-        let fields =
-            AppleScriptFields::parse("Title\tArtist\tAlbum\t\t\tstopped").expect("should parse");
-        assert_eq!(fields.playback_state(), PlaybackState::Stopped);
-    }
-
-    #[test]
-    fn test_playback_state_case_insensitive() {
-        let fields =
-            AppleScriptFields::parse("Title\tArtist\tAlbum\t\t\tPLAYING").expect("should parse");
-        assert_eq!(fields.playback_state(), PlaybackState::Playing);
-    }
-
-    #[test]
-    fn test_playback_state_unknown_defaults_to_playing() {
-        let fields =
-            AppleScriptFields::parse("Title\tArtist\tAlbum\t\t\tunknown").expect("should parse");
-        assert_eq!(fields.playback_state(), PlaybackState::Playing);
-    }
-
-    #[test]
-    fn test_position_returns_none_when_missing() {
-        let fields = AppleScriptFields::parse("Title\tArtist\tAlbum").expect("should parse");
-        assert_eq!(fields.position(), None);
-    }
-
-    #[test]
-    fn test_position_returns_some_when_present() {
-        let fields =
-            AppleScriptFields::parse("Title\tArtist\tAlbum\t\t\t\t60.5").expect("should parse");
-        assert_eq!(fields.position(), Some(Duration::from_secs_f64(60.5)));
-    }
-
-    #[test]
-    fn test_volume_returns_none_when_missing() {
-        let fields = AppleScriptFields::parse("Title\tArtist\tAlbum").expect("should parse");
-        assert_eq!(fields.volume(), None);
-    }
-
-    #[test]
-    fn test_volume_converts_from_percentage() {
-        let fields =
-            AppleScriptFields::parse("Title\tArtist\tAlbum\t\t\t\t\t75").expect("should parse");
-        assert_eq!(fields.volume(), Some(0.75));
-    }
-
-    #[test]
-    fn test_duration_in_seconds_for_music() {
-        let fields = AppleScriptFields::parse("Title\tArtist\tAlbum\t\t\t\t\t\t240.5")
-            .expect("should parse");
-        assert_eq!(
-            fields.duration_in_seconds(),
-            Some(Duration::from_secs_f64(240.5))
-        );
-    }
-
-    #[test]
-    fn test_duration_in_millis_for_spotify() {
-        let fields = AppleScriptFields::parse("Title\tArtist\tAlbum\t\t\t\t\t\t240500")
-            .expect("should parse");
-        assert_eq!(
-            fields.duration_in_millis(),
-            Some(Duration::from_millis(240_500))
-        );
-    }
-
-    #[test]
-    fn test_to_music_player_state_full() {
-        let output =
-            "Bohemian Rhapsody\tQueen\tA Night at the Opera\tQueen\t11\tplaying\t123.45\t75\t354.5";
-        let fields = AppleScriptFields::parse(output).expect("should parse");
-        let state = fields.to_music_player_state();
-
-        assert_eq!(
-            state,
-            PlayerState {
-                track: Track {
-                    title: "Bohemian Rhapsody".to_string(),
-                    artist: vec!["Queen".to_string()],
-                    album: Some("A Night at the Opera".to_string()),
-                    album_artist: Some(vec!["Queen".to_string()]),
-                    track_number: Some(11),
-                    duration: Some(Duration::from_secs_f64(354.5)),
-                    art_url: None
-                },
-                playback_state: PlaybackState::Playing,
-                position: Some(Duration::from_secs_f64(123.45)),
-                volume: Some(0.75),
-            }
-        );
-    }
-
-    #[test]
-    fn test_to_spotify_player_state_full() {
-        let output = "Bohemian Rhapsody\tQueen\tA Night at the Opera\tQueen\t11\tplaying\t123.45\t75\t354500";
-        let fields = AppleScriptFields::parse(output).expect("should parse");
-        let state = fields.to_spotify_player_state();
-
-        assert_eq!(
-            state,
-            PlayerState {
-                track: Track {
-                    title: "Bohemian Rhapsody".to_string(),
-                    artist: vec!["Queen".to_string()],
-                    album: Some("A Night at the Opera".to_string()),
-                    album_artist: Some(vec!["Queen".to_string()]),
-                    track_number: Some(11),
-                    duration: Some(Duration::from_millis(354_500)),
-                    art_url: None
-                },
-                playback_state: PlaybackState::Playing,
-                position: Some(Duration::from_secs_f64(123.45)),
-                volume: Some(0.75),
-            }
-        );
-    }
-
-    #[test]
-    fn test_to_music_player_state_minimal() {
-        let output = "Title\tArtist\tAlbum";
-        let fields = AppleScriptFields::parse(output).expect("should parse");
-        let state = fields.to_music_player_state();
-
-        assert_eq!(
-            state,
-            PlayerState {
-                track: Track {
-                    title: "Title".to_string(),
-                    artist: vec!["Artist".to_string()],
-                    album: Some("Album".to_string()),
-                    album_artist: None,
-                    track_number: None,
-                    duration: None,
-                    art_url: None
-                },
-                playback_state: PlaybackState::Playing,
-                position: None,
-                volume: None,
-            }
-        );
-    }
-
-    #[test]
-    fn test_unicode_support() {
-        let output =
-            "春よ、来い\t松任谷由実\tThe Dancing Sun\t松任谷由実\t7\tplaying\t120\t65\t265";
-        let fields = AppleScriptFields::parse(output).expect("should parse");
-
-        assert_eq!(fields.title(), "春よ、来い");
-        assert_eq!(fields.artist(), "松任谷由実");
-        assert_eq!(fields.album(), Some("The Dancing Sun"));
-    }
-
-    #[test]
-    fn test_special_characters() {
-        let output = "Song & Title (Remix)\tArtist: Name\tAlbum - Edition\tVarious Artists\t3\tplaying\t30\t80\t200";
-        let fields = AppleScriptFields::parse(output).expect("should parse");
-
-        assert_eq!(fields.title(), "Song & Title (Remix)");
-        assert_eq!(fields.artist(), "Artist: Name");
-        assert_eq!(fields.album(), Some("Album - Edition"));
-    }
-
-    #[test]
-    fn test_whitespace_preservation() {
-        let output = "  Trimmed Title  \t  Trimmed Artist  \t  Trimmed Album  \t  Trimmed Artist  \t4\tplaying\t10\t90\t150";
-        let fields = AppleScriptFields::parse(output).expect("should parse");
-
-        // Whitespace is preserved
-        assert_eq!(fields.title(), "  Trimmed Title  ");
-        assert_eq!(fields.artist(), "  Trimmed Artist  ");
-    }
-
-    #[test]
-    fn test_empty_album_returns_none() {
-        let output = "Title\tArtist\t\tArtist\t1\tplaying\t0\t100\t180";
-        let fields = AppleScriptFields::parse(output).expect("should parse");
-        assert_eq!(fields.album(), None);
-    }
-
-    #[test]
-    fn test_track_number_zero_filtered() {
-        let output = "Title\tArtist\tAlbum\t\t0\tplaying\t30\t80\t200";
-        let fields = AppleScriptFields::parse(output).expect("should parse");
-        assert_eq!(fields.track_number(), None);
-    }
     // PlayerMonitor tests
 
     #[test]
@@ -1339,5 +1006,327 @@ mod tests {
 
         // Should not generate any events
         assert_eq!(events, Vec::<MediaEvent>::new());
+    }
+
+    // AppleScriptPlayerState tests
+
+    #[test]
+    fn test_applescript_player_state_deserialize_playing() -> Result<()> {
+        let json = r#"{
+            "playerState": "playing",
+            "playerPosition": 45.5,
+            "soundVolume": 80,
+            "trackName": "Test Song",
+            "trackArtist": "Test Artist",
+            "trackAlbum": "Test Album",
+            "trackAlbumArtist": "Test Album Artist",
+            "trackNumber": 3,
+            "trackDuration": 180.0
+        }"#;
+
+        let state: AppleScriptPlayerState =
+            serde_json::from_str(json).map_err(|e| MediaSourceError::ParseError(e.to_string()))?;
+
+        assert_eq!(
+            state,
+            AppleScriptPlayerState {
+                player_state: AppleScriptPlaybackState::Playing,
+                player_position: 45.5,
+                sound_volume: 80,
+                track_name: "Test Song".to_string(),
+                track_artist: "Test Artist".to_string(),
+                track_album: "Test Album".to_string(),
+                track_album_artist: "Test Album Artist".to_string(),
+                track_number: 3,
+                track_duration: 180.0,
+            }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_applescript_player_state_deserialize_paused() -> Result<()> {
+        let json = r#"{
+            "playerState": "paused",
+            "playerPosition": 30.0,
+            "soundVolume": 50,
+            "trackName": "Paused Song",
+            "trackArtist": "Artist",
+            "trackAlbum": "Album",
+            "trackAlbumArtist": "Album Artist",
+            "trackNumber": 1,
+            "trackDuration": 200.0
+        }"#;
+
+        let state: AppleScriptPlayerState =
+            serde_json::from_str(json).map_err(|e| MediaSourceError::ParseError(e.to_string()))?;
+
+        assert_eq!(state.player_state, AppleScriptPlaybackState::Paused);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_applescript_player_state_deserialize_stopped() -> Result<()> {
+        let json = r#"{
+            "playerState": "stopped",
+            "playerPosition": 0.0,
+            "soundVolume": 70,
+            "trackName": "Stopped Song",
+            "trackArtist": "Artist",
+            "trackAlbum": "Album",
+            "trackAlbumArtist": "Album Artist",
+            "trackNumber": 2,
+            "trackDuration": 150.0
+        }"#;
+
+        let state: AppleScriptPlayerState =
+            serde_json::from_str(json).map_err(|e| MediaSourceError::ParseError(e.to_string()))?;
+
+        assert_eq!(state.player_state, AppleScriptPlaybackState::Stopped);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_applescript_player_state_deserialize_fast_forwarding() -> Result<()> {
+        let json = r#"{
+            "playerState": "fast forwarding",
+            "playerPosition": 60.0,
+            "soundVolume": 90,
+            "trackName": "Fast Song",
+            "trackArtist": "Artist",
+            "trackAlbum": "Album",
+            "trackAlbumArtist": "Album Artist",
+            "trackNumber": 5,
+            "trackDuration": 240.0
+        }"#;
+
+        let state: AppleScriptPlayerState =
+            serde_json::from_str(json).map_err(|e| MediaSourceError::ParseError(e.to_string()))?;
+
+        assert_eq!(state.player_state, AppleScriptPlaybackState::FastForwarding);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_applescript_player_state_deserialize_rewinding() -> Result<()> {
+        let json = r#"{
+            "playerState": "rewinding",
+            "playerPosition": 20.0,
+            "soundVolume": 60,
+            "trackName": "Rewind Song",
+            "trackArtist": "Artist",
+            "trackAlbum": "Album",
+            "trackAlbumArtist": "Album Artist",
+            "trackNumber": 4,
+            "trackDuration": 210.0
+        }"#;
+
+        let state: AppleScriptPlayerState =
+            serde_json::from_str(json).map_err(|e| MediaSourceError::ParseError(e.to_string()))?;
+
+        assert_eq!(state.player_state, AppleScriptPlaybackState::Rewinding);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_applescript_playback_state_conversion() {
+        let test_cases = vec![
+            (AppleScriptPlaybackState::Playing, PlaybackState::Playing),
+            (AppleScriptPlaybackState::Paused, PlaybackState::Paused),
+            (AppleScriptPlaybackState::Stopped, PlaybackState::Stopped),
+            (
+                AppleScriptPlaybackState::FastForwarding,
+                PlaybackState::Playing,
+            ),
+            (AppleScriptPlaybackState::Rewinding, PlaybackState::Playing),
+        ];
+
+        for (applescript_state, expected_state) in test_cases {
+            let state = AppleScriptPlayerState {
+                player_state: applescript_state,
+                player_position: 0.0,
+                sound_volume: 50,
+                track_name: "Test".to_string(),
+                track_artist: "Artist".to_string(),
+                track_album: "Album".to_string(),
+                track_album_artist: "Album Artist".to_string(),
+                track_number: 1,
+                track_duration: 100.0,
+            };
+
+            assert_eq!(state.playback_state(), expected_state);
+        }
+    }
+
+    #[test]
+    fn test_applescript_player_state_into_music_track() {
+        let state = AppleScriptPlayerState {
+            player_state: AppleScriptPlaybackState::Playing,
+            player_position: 45.5,
+            sound_volume: 80,
+            track_name: "Bohemian Rhapsody".to_string(),
+            track_artist: "Queen".to_string(),
+            track_album: "A Night at the Opera".to_string(),
+            track_album_artist: "Queen".to_string(),
+            track_number: 11,
+            track_duration: 354.0, // seconds
+        };
+
+        let track = state.into_music_track();
+
+        assert_eq!(
+            track,
+            Track {
+                title: "Bohemian Rhapsody".to_string(),
+                artist: vec!["Queen".to_string()],
+                album: Some("A Night at the Opera".to_string()),
+                album_artist: Some(vec!["Queen".to_string()]),
+                track_number: Some(11),
+                duration: Some(Duration::from_secs_f64(354.0)),
+                art_url: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_applescript_player_state_into_spotify_track() {
+        let state = AppleScriptPlayerState {
+            player_state: AppleScriptPlaybackState::Playing,
+            player_position: 30.0,
+            sound_volume: 70,
+            track_name: "Stairway to Heaven".to_string(),
+            track_artist: "Led Zeppelin".to_string(),
+            track_album: "Led Zeppelin IV".to_string(),
+            track_album_artist: "Led Zeppelin".to_string(),
+            track_number: 4,
+            track_duration: 482_000.0, // milliseconds
+        };
+
+        let track = state.into_spotify_track();
+
+        assert_eq!(
+            track,
+            Track {
+                title: "Stairway to Heaven".to_string(),
+                artist: vec!["Led Zeppelin".to_string()],
+                album: Some("Led Zeppelin IV".to_string()),
+                album_artist: Some(vec!["Led Zeppelin".to_string()]),
+                track_number: Some(4),
+                duration: Some(Duration::from_millis(482_000)),
+                art_url: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_applescript_player_state_into_music_player_state() {
+        let state = AppleScriptPlayerState {
+            player_state: AppleScriptPlaybackState::Paused,
+            player_position: 120.5,
+            sound_volume: 75,
+            track_name: "Test Track".to_string(),
+            track_artist: "Test Artist".to_string(),
+            track_album: "Test Album".to_string(),
+            track_album_artist: "Test Album Artist".to_string(),
+            track_number: 2,
+            track_duration: 240.0,
+        };
+
+        let player_state = state.into_music_player_state();
+
+        assert_eq!(
+            player_state,
+            PlayerState {
+                track: Track {
+                    title: "Test Track".to_string(),
+                    artist: vec!["Test Artist".to_string()],
+                    album: Some("Test Album".to_string()),
+                    album_artist: Some(vec!["Test Album Artist".to_string()]),
+                    track_number: Some(2),
+                    duration: Some(Duration::from_secs_f64(240.0)),
+                    art_url: None,
+                },
+                playback_state: PlaybackState::Paused,
+                position: Some(Duration::from_secs_f64(120.5)),
+                volume: Some(75.0),
+            }
+        );
+    }
+
+    #[test]
+    fn test_applescript_player_state_into_spotify_player_state() {
+        let state = AppleScriptPlayerState {
+            player_state: AppleScriptPlaybackState::Playing,
+            player_position: 65.25,
+            sound_volume: 85,
+            track_name: "Spotify Track".to_string(),
+            track_artist: "Spotify Artist".to_string(),
+            track_album: "Spotify Album".to_string(),
+            track_album_artist: "Spotify Album Artist".to_string(),
+            track_number: 7,
+            track_duration: 195_000.0, // milliseconds for Spotify
+        };
+
+        let player_state = state.into_spotify_player_state();
+
+        assert_eq!(
+            player_state,
+            PlayerState {
+                track: Track {
+                    title: "Spotify Track".to_string(),
+                    artist: vec!["Spotify Artist".to_string()],
+                    album: Some("Spotify Album".to_string()),
+                    album_artist: Some(vec!["Spotify Album Artist".to_string()]),
+                    track_number: Some(7),
+                    duration: Some(Duration::from_millis(195_000)),
+                    art_url: None,
+                },
+                playback_state: PlaybackState::Playing,
+                position: Some(Duration::from_secs_f64(65.25)),
+                volume: Some(85.0),
+            }
+        );
+    }
+
+    #[test]
+    fn test_applescript_player_state_duration_difference() {
+        // Music.app uses seconds for duration
+        let music_state = AppleScriptPlayerState {
+            player_state: AppleScriptPlaybackState::Playing,
+            player_position: 0.0,
+            sound_volume: 50,
+            track_name: "Track".to_string(),
+            track_artist: "Artist".to_string(),
+            track_album: "Album".to_string(),
+            track_album_artist: "Album Artist".to_string(),
+            track_number: 1,
+            track_duration: 180.0, // 180 seconds
+        };
+
+        // Spotify uses milliseconds for duration
+        let spotify_state = AppleScriptPlayerState {
+            player_state: AppleScriptPlaybackState::Playing,
+            player_position: 0.0,
+            sound_volume: 50,
+            track_name: "Track".to_string(),
+            track_artist: "Artist".to_string(),
+            track_album: "Album".to_string(),
+            track_album_artist: "Album Artist".to_string(),
+            track_number: 1,
+            track_duration: 180_000.0, // 180000 milliseconds = 180 seconds
+        };
+
+        let music_track = music_state.into_music_track();
+        let spotify_track = spotify_state.into_spotify_track();
+
+        // Both should represent the same duration
+        assert_eq!(music_track.duration, Some(Duration::from_secs(180)));
+        assert_eq!(spotify_track.duration, Some(Duration::from_millis(180_000)));
+        assert_eq!(music_track.duration, spotify_track.duration);
     }
 }
