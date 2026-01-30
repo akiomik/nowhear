@@ -424,7 +424,7 @@ impl AppleScriptPlayerState {
     #[allow(clippy::cast_precision_loss)]
     pub fn into_music_player_state(self) -> PlayerState {
         let player_position = Duration::from_secs_f64(self.player_position);
-        let sound_volume = self.sound_volume as f64;
+        let sound_volume = self.sound_volume as f64 / 100.0;
         let playback_state = self.playback_state();
 
         PlayerState {
@@ -438,7 +438,7 @@ impl AppleScriptPlayerState {
     #[allow(clippy::cast_precision_loss)]
     pub fn into_spotify_player_state(self) -> PlayerState {
         let player_position = Duration::from_secs_f64(self.player_position);
-        let sound_volume = self.sound_volume as f64;
+        let sound_volume = self.sound_volume as f64 / 100.0;
         let playback_state = self.playback_state();
 
         PlayerState {
@@ -1299,7 +1299,7 @@ mod tests {
                 },
                 playback_state: PlaybackState::Paused,
                 position: Some(Duration::from_secs_f64(120.5)),
-                volume: Some(75.0),
+                volume: Some(0.75),
             }
         );
     }
@@ -1335,7 +1335,7 @@ mod tests {
                 },
                 playback_state: PlaybackState::Playing,
                 position: Some(Duration::from_secs_f64(65.25)),
-                volume: Some(85.0),
+                volume: Some(0.85),
             }
         );
     }

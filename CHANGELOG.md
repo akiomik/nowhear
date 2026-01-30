@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING**: macOS: Normalized volume range from 0-100 to 0.0-1.0 to match Linux implementation
+
 ## [0.1.3] - 2026-01-31
 
 ### Changed
