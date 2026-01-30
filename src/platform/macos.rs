@@ -78,8 +78,7 @@ impl AppleScriptProvider {
         if output.is_empty() {
             Ok(None)
         } else {
-            let jxa_state: AppleScriptPlayerState = serde_json::from_str(&output)
-                .map_err(|e| MediaSourceError::ParseError(e.to_string()))?;
+            let jxa_state: AppleScriptPlayerState = serde_json::from_str(&output)?;
             Ok(Some(jxa_state.into_music_player_state()))
         }
     }
@@ -91,8 +90,7 @@ impl AppleScriptProvider {
         if output.is_empty() {
             Ok(None)
         } else {
-            let jxa_state: AppleScriptPlayerState = serde_json::from_str(&output)
-                .map_err(|e| MediaSourceError::ParseError(e.to_string()))?;
+            let jxa_state: AppleScriptPlayerState = serde_json::from_str(&output)?;
             Ok(Some(jxa_state.into_spotify_player_state()))
         }
     }
@@ -1052,8 +1050,7 @@ mod tests {
             "trackDuration": 180.0
         }"#;
 
-        let state: AppleScriptPlayerState =
-            serde_json::from_str(json).map_err(|e| MediaSourceError::ParseError(e.to_string()))?;
+        let state: AppleScriptPlayerState = serde_json::from_str(json)?;
 
         assert_eq!(
             state,
@@ -1088,8 +1085,7 @@ mod tests {
             "trackDuration": 200.0
         }"#;
 
-        let state: AppleScriptPlayerState =
-            serde_json::from_str(json).map_err(|e| MediaSourceError::ParseError(e.to_string()))?;
+        let state: AppleScriptPlayerState = serde_json::from_str(json)?;
 
         assert_eq!(state.player_state, AppleScriptPlaybackState::Paused);
 
@@ -1110,8 +1106,7 @@ mod tests {
             "trackDuration": 150.0
         }"#;
 
-        let state: AppleScriptPlayerState =
-            serde_json::from_str(json).map_err(|e| MediaSourceError::ParseError(e.to_string()))?;
+        let state: AppleScriptPlayerState = serde_json::from_str(json)?;
 
         assert_eq!(state.player_state, AppleScriptPlaybackState::Stopped);
 
@@ -1132,8 +1127,7 @@ mod tests {
             "trackDuration": 240.0
         }"#;
 
-        let state: AppleScriptPlayerState =
-            serde_json::from_str(json).map_err(|e| MediaSourceError::ParseError(e.to_string()))?;
+        let state: AppleScriptPlayerState = serde_json::from_str(json)?;
 
         assert_eq!(state.player_state, AppleScriptPlaybackState::FastForwarding);
 
@@ -1154,8 +1148,7 @@ mod tests {
             "trackDuration": 210.0
         }"#;
 
-        let state: AppleScriptPlayerState =
-            serde_json::from_str(json).map_err(|e| MediaSourceError::ParseError(e.to_string()))?;
+        let state: AppleScriptPlayerState = serde_json::from_str(json)?;
 
         assert_eq!(state.player_state, AppleScriptPlaybackState::Rewinding);
 
@@ -1177,8 +1170,7 @@ mod tests {
             "trackDuration": 180.0
         }"#;
 
-        let state: AppleScriptPlayerState =
-            serde_json::from_str(json).map_err(|e| MediaSourceError::ParseError(e.to_string()))?;
+        let state: AppleScriptPlayerState = serde_json::from_str(json)?;
 
         assert_eq!(
             state,
