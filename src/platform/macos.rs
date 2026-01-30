@@ -265,6 +265,9 @@ impl<P: PlayerStateProvider + 'static> MacOSMediaSource<P> {
         tokio::spawn(async move {
             let mut monitor = PlayerMonitor::new();
             let mut interval = time::interval(Duration::from_millis(1000));
+            // Use Skip to avoid processing stale states when system is under load.
+            // We only care about the current state, not catching up on missed polls.
+            interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
             loop {
                 interval.tick().await;

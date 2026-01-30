@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Linux: Migrated to async MPRIS API using native `zbus` implementation for improved performance and better async/await integration
+- macOS/Windows: Changed polling interval behavior to skip missed ticks instead of bursting, improving performance under system load
 
 ## [0.1.2] - 2026-01-27
 
