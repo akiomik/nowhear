@@ -8,7 +8,7 @@ use std::time::Duration;
 use futures::future;
 use futures::stream::Stream;
 use tokio::sync::mpsc;
-use tokio::time::{interval, sleep};
+use tokio::time::{MissedTickBehavior, interval, sleep};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use windows::Foundation::IStringable;
 use windows::Media::Control::{
@@ -218,6 +218,9 @@ impl MediaSessionProvider for WindowsMediaControlProvider {
         tokio::spawn(async move {
             let mut monitor = PlayerMonitor::new();
             let mut poll_interval = interval(Duration::from_millis(1000));
+            // Use Skip to avoid processing stale states when system is under load.
+            // We only care about the current state, not catching up on missed polls.
+            poll_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
             loop {
                 poll_interval.tick().await;
