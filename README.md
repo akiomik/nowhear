@@ -46,11 +46,11 @@ use nowhear::{MediaSource, MediaSourceBuilder, Result};
 async fn main() -> Result<()> {
     // Create a media source
     let source = MediaSourceBuilder::new().build().await?;
-    
+
     // List all active media players
     let players = source.list_players().await?;
     println!("Active players: {players:?}");
-    
+
     // Get information for a specific player
     if let Some(player_name) = players.first() {
         let info = source.get_player(player_name).await?;
@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
             println!("Track: {} - {}", track.artist.join(", "), track.title);
         }
     }
-    
+
     Ok(())
 }
 ```
@@ -74,10 +74,10 @@ use nowhear::{MediaEvent, MediaSource, MediaSourceBuilder, Result};
 #[tokio::main]
 async fn main() -> Result<()> {
     let source = MediaSourceBuilder::new().build().await?;
-    
+
     // Create an event stream
     let mut stream = source.event_stream().await?;
-    
+
     // Process events as they arrive
     while let Some(event) = stream.next().await {
         match event {
@@ -96,7 +96,7 @@ async fn main() -> Result<()> {
             _ => {}
         }
     }
-    
+
     Ok(())
 }
 ```
@@ -124,19 +124,19 @@ pub trait MediaSource: Send + Sync {
 pub enum MediaEvent {
     /// A new track started playing
     TrackChanged { player_name: String, track: Track },
-    
+
     /// Playback state changed (playing, paused, stopped)
     StateChanged { player_name: String, state: PlaybackState },
-    
+
     /// Playback position changed (seek)
     PositionChanged { player_name: String, position: Duration },
-    
+
     /// Volume changed
     VolumeChanged { player_name: String, volume: f64 },
-    
+
     /// A new player appeared
     PlayerAdded { player_name: String },
-    
+
     /// A player disappeared
     PlayerRemoved { player_name: String },
 }
@@ -175,10 +175,22 @@ cargo run --example stream
 - Requires D-Bus and MPRIS-compatible media players
 - Works out of the box on most modern Linux distributions
 - Event-driven architecture using native D-Bus signals for real-time updates
+- **Build requirements**: `libdbus-1-dev` and `pkg-config` packages are required
+  ```bash
+  # Debian/Ubuntu
+  sudo apt-get install libdbus-1-dev pkg-config
+
+  # Fedora/RHEL
+  sudo dnf install dbus-devel pkgconf-pkg-config
+
+  # Arch Linux
+  sudo pacman -S dbus pkg-config
+  ```
 
 ### macOS
 
-- Uses AppleScript to communicate with media players
+- Uses AppleScript (JXA) to communicate with media players
+- Requires macOS 10.10 Yosemite or later (JXA support required)
 - Does not launch media applications if they're not already running
 - Supports Music.app and Spotify
 - Polling interval: 1000ms
