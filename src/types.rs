@@ -21,7 +21,7 @@ use std::time::Duration;
 ///     title: "Bohemian Rhapsody".to_string(),
 ///     artist: vec!["Queen".to_string()],
 ///     album: Some("A Night at the Opera".to_string()),
-///     album_artist: None,
+///     album_artist: vec!["Queen".to_string()],
 ///     track_number: Some(11),
 ///     duration: Some(Duration::from_secs(354)),
 ///     art_url: None,
@@ -36,7 +36,7 @@ pub struct Track {
     /// Album name, if available
     pub album: Option<String>,
     /// Album artists, if different from track artists
-    pub album_artist: Option<Vec<String>>,
+    pub album_artist: Vec<String>,
     /// Track number in the album
     pub track_number: Option<u32>,
     /// Total duration of the track
@@ -55,7 +55,7 @@ impl Track {
             title: "Unknown".to_string(),
             artist: vec![],
             album: None,
-            album_artist: None,
+            album_artist: vec![],
             track_number: None,
             duration: None,
             art_url: None,

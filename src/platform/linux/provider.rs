@@ -517,7 +517,7 @@ mod tests {
                         title: "Test Song".to_string(),
                         artist: vec![],
                         album: None,
-                        album_artist: Some(vec![]),
+                        album_artist: vec![],
                         track_number: None,
                         duration: None,
                         art_url: None,

@@ -138,7 +138,7 @@ mod tests {
             title: title.to_string(),
             artist: vec!["Test Artist".to_string()],
             album: Some("Test Album".to_string()),
-            album_artist: None,
+            album_artist: vec![],
             track_number: None,
             duration: Some(Duration::from_secs(180)),
             art_url: None,
