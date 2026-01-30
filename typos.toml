@@ -1,2 +1,2 @@
-[default.extend-identifiers]
-Seeked = "Seeked" # MprisEvent::Seeked
+[default.extend-words]
+seeked = "seeked" # MPRIS Seeked signal

@@ -245,7 +245,7 @@ impl MediaSourceBuilder {
         #[cfg(target_os = "linux")]
         {
             Ok(PlatformMediaSource(PlatformMediaSourceInner::Linux(
-                LinuxMediaSource::new()?,
+                LinuxMediaSource::new().await?,
             )))
         }
 

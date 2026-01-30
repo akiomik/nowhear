@@ -31,6 +31,29 @@ pub enum MediaSourceError {
     InternalError(String),
 }
 
+#[cfg(target_os = "linux")]
+impl From<zbus::Error> for MediaSourceError {
+    fn from(value: zbus::Error) -> Self {
+        Self::ConnectionError(value.to_string())
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[allow(clippy::absolute_paths)]
+impl From<zbus::zvariant::Error> for MediaSourceError {
+    fn from(value: zbus::zvariant::Error) -> Self {
+        Self::ParseError(value.to_string())
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[allow(clippy::absolute_paths)]
+impl From<zbus::fdo::Error> for MediaSourceError {
+    fn from(value: zbus::fdo::Error) -> Self {
+        Self::ParseError(value.to_string())
+    }
+}
+
 /// Result type alias for media source operations.
 ///
 /// This is a convenience type alias that uses [`MediaSourceError`] as the error type.

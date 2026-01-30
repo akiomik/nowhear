@@ -174,7 +174,7 @@ cargo run --example stream
 
 - Requires D-Bus and MPRIS-compatible media players
 - Works out of the box on most modern Linux distributions
-- Polling interval: 500ms
+- Event-driven architecture using native D-Bus signals for real-time updates
 
 ### macOS
 
