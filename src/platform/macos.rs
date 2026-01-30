@@ -398,12 +398,24 @@ impl AppleScriptPlayerState {
     pub fn into_music_track(self) -> Track {
         Track {
             title: self.track_name,
-            artist: vec![self.track_artist],
-            album: Some(self.track_album),
-            album_artist: vec![self.track_album_artist],
+            artist: if self.track_artist.is_empty() {
+                vec![]
+            } else {
+                vec![self.track_artist]
+            },
+            album: if self.track_album.is_empty() {
+                None
+            } else {
+                Some(self.track_album)
+            },
+            album_artist: if self.track_album_artist.is_empty() {
+                vec![]
+            } else {
+                vec![self.track_album_artist]
+            },
             track_number: Some(self.track_number),
             duration: Some(Duration::from_secs_f64(self.track_duration)),
-            art_url: self.track_album_artwork_url,
+            art_url: self.track_album_artwork_url.filter(|s| !s.is_empty()),
         }
     }
 
@@ -412,12 +424,24 @@ impl AppleScriptPlayerState {
     pub fn into_spotify_track(self) -> Track {
         Track {
             title: self.track_name,
-            artist: vec![self.track_artist],
-            album: Some(self.track_album),
-            album_artist: vec![self.track_album_artist],
+            artist: if self.track_artist.is_empty() {
+                vec![]
+            } else {
+                vec![self.track_artist]
+            },
+            album: if self.track_album.is_empty() {
+                None
+            } else {
+                Some(self.track_album)
+            },
+            album_artist: if self.track_album_artist.is_empty() {
+                vec![]
+            } else {
+                vec![self.track_album_artist]
+            },
             track_number: Some(self.track_number),
             duration: Some(Duration::from_millis(self.track_duration as u64)),
-            art_url: self.track_album_artwork_url,
+            art_url: self.track_album_artwork_url.filter(|s| !s.is_empty()),
         }
     }
 

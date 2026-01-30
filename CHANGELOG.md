@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **BREAKING**: Changed `Track::album_artist` from `Option<Vec<String>>` to `Vec<String>` for API consistency with `Track::artist`
+- **BREAKING**: Empty strings are now filtered out from `Track::artist` and `Track::album_artist` arrays
+- **BREAKING**: `Track::album` and `Track::art_url` now return `None` instead of `Some("")` when values are empty
 - **BREAKING**: macOS: Normalized volume range from 0-100 to 0.0-1.0 to match Linux implementation
 
 ## [0.1.3] - 2026-01-31

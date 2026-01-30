@@ -124,7 +124,8 @@ impl WindowsMediaControlProvider {
         let artist = if artist_hstring.is_empty() {
             vec![]
         } else {
-            vec![artist_hstring.to_string()]
+            let s = artist_hstring.to_string();
+            if s.is_empty() { vec![] } else { vec![s] }
         };
 
         let album_title = media_props.AlbumTitle().ok();
