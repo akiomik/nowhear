@@ -31,7 +31,10 @@ impl TryFrom<Dict<'_, '_>> for MprisMetadata {
 
         let art_url_key = Value::new("mpris:artUrl");
         if let Some(Value::Str(art_url)) = dict.get(&art_url_key)? {
-            metadata.art_url = Some(art_url.to_string());
+            let s = art_url.to_string();
+            if !s.is_empty() {
+                metadata.art_url = Some(s);
+            }
         }
 
         let length_key = Value::new("mpris:length");
@@ -46,7 +49,10 @@ impl TryFrom<Dict<'_, '_>> for MprisMetadata {
 
         let album_key = Value::new("xesam:album");
         if let Some(Value::Str(album)) = dict.get(&album_key)? {
-            metadata.album = Some(album.to_string());
+            let s = album.to_string();
+            if !s.is_empty() {
+                metadata.album = Some(s);
+            }
         }
 
         let album_artist_key = Value::new("xesam:albumArtist");
@@ -54,7 +60,10 @@ impl TryFrom<Dict<'_, '_>> for MprisMetadata {
             metadata.album_artist = artists
                 .iter()
                 .filter_map(|artist| match artist {
-                    Value::Str(artist) => Some(artist.to_string()),
+                    Value::Str(artist) => {
+                        let s = artist.to_string();
+                        if s.is_empty() { None } else { Some(s) }
+                    }
                     _ => None,
                 })
                 .collect();
@@ -65,7 +74,10 @@ impl TryFrom<Dict<'_, '_>> for MprisMetadata {
             metadata.artist = artists
                 .iter()
                 .filter_map(|artist| match artist {
-                    Value::Str(artist) => Some(artist.to_string()),
+                    Value::Str(artist) => {
+                        let s = artist.to_string();
+                        if s.is_empty() { None } else { Some(s) }
+                    }
                     _ => None,
                 })
                 .collect();
@@ -330,6 +342,34 @@ mod tests {
                 duration: Some(Duration::from_secs(180)),
                 art_url: Some("file:///path/to/art.jpg".to_string()),
             }
+        );
+    }
+
+    #[test]
+    fn test_parse_metadata_filters_empty_strings() {
+        let mut values = HashMap::new();
+        values.insert("xesam:title", Value::new("Test Song"));
+        values.insert("xesam:artist", Value::new(vec!["Artist 1", "", "Artist 2"]));
+        values.insert(
+            "xesam:albumArtist",
+            Value::new(vec!["", "Album Artist", ""]),
+        );
+        values.insert("xesam:album", Value::new(""));
+        values.insert("mpris:artUrl", Value::new(""));
+        let dict = Dict::from(values);
+
+        let metadata = MprisMetadata::try_from(dict);
+
+        assert_eq!(
+            metadata,
+            Ok(MprisMetadata {
+                title: Some("Test Song".to_string()),
+                artist: vec!["Artist 1".to_string(), "Artist 2".to_string()],
+                album_artist: vec!["Album Artist".to_string()],
+                album: None,
+                art_url: None,
+                ..Default::default()
+            })
         );
     }
 }
