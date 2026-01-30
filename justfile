@@ -7,6 +7,9 @@ build-linux:
 build-macos:
   cargo build --target aarch64-apple-darwin
 
+build-macos-x86_64:
+  cargo build --target x86_64-apple-darwin
+
 build-windows:
   # NOTE: requires `brew install mingw-w64` on macos
   cargo build --target x86_64-pc-windows-gnu
