@@ -109,7 +109,7 @@ impl From<MprisMetadata> for Track {
 
         track.artist = metadata.artist;
         track.album = metadata.album;
-        track.album_artist = Some(metadata.album_artist);
+        track.album_artist = metadata.album_artist;
         track.track_number = metadata.track_number.and_then(|num| num.try_into().ok());
         track.duration = metadata.length.map(Duration::from_micros);
         track.art_url = metadata.art_url;
@@ -325,7 +325,7 @@ mod tests {
                 title: "Test Song".to_string(),
                 artist: vec!["Test Artist".to_string()],
                 album: Some("Test Album".to_string()),
-                album_artist: Some(vec!["Album Artist".to_string()]),
+                album_artist: vec!["Album Artist".to_string()],
                 track_number: Some(5),
                 duration: Some(Duration::from_secs(180)),
                 art_url: Some("file:///path/to/art.jpg".to_string()),
