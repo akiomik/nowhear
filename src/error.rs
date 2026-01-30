@@ -54,6 +54,13 @@ impl From<zbus::fdo::Error> for MediaSourceError {
     }
 }
 
+#[cfg(target_os = "macos")]
+impl From<serde_json::Error> for MediaSourceError {
+    fn from(value: serde_json::Error) -> Self {
+        Self::ParseError(value.to_string())
+    }
+}
+
 /// Result type alias for media source operations.
 ///
 /// This is a convenience type alias that uses [`MediaSourceError`] as the error type.
