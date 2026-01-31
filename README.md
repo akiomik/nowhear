@@ -149,7 +149,7 @@ pub struct Track {
     pub title: String,
     pub artist: Vec<String>,
     pub album: Option<String>,
-    pub album_artist: Option<Vec<String>>,
+    pub album_artist: Vec<String>,
     pub track_number: Option<u32>,
     pub duration: Option<Duration>,
     pub art_url: Option<String>,
