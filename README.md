@@ -30,7 +30,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-nowhear = "0.1"
+nowhear = "0.2"
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
 futures = "0.3"
 ```
