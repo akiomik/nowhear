@@ -199,8 +199,8 @@ cargo run --example stream
 
 - Uses the Windows Media Control API (Windows 10 version 1809 or later)
 - Supports any application that integrates with System Media Transport Controls (SMTC)
+- Event-driven architecture using Windows Runtime event handlers for real-time updates
 - Volume information is not available through the Windows Media Control API
-- Polling interval: 1000ms
 
 ## Development
 

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Windows: Migrated from polling-based to fully event-driven architecture using Windows Runtime event handlers (`SessionsChanged`, `MediaPropertiesChanged`, `PlaybackInfoChanged`, `TimelinePropertiesChanged`) for real-time updates with improved performance and reduced resource usage
+
 ## [0.2.0] - 2026-02-03
 
 ### Changed
