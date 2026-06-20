@@ -45,7 +45,7 @@ async fn main() -> Result<()> {
                 println!("\n➕ Player added: {player_name}");
             }
             MediaEvent::PlayerRemoved { player_name } => {
-                println!("\n➖ Player removed: {player_name}",);
+                println!("\n➖ Player removed: {player_name}");
             }
         }
     }

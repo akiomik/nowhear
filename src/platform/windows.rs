@@ -218,7 +218,7 @@ impl MediaSessionProvider for WindowsMediaControlProvider {
 
         tokio::spawn(async move {
             let mut monitor = PlayerMonitor::new();
-            let mut poll_interval = interval(Duration::from_millis(1000));
+            let mut poll_interval = interval(Duration::from_secs(1));
             // Use Skip to avoid processing stale states when system is under load.
             // We only care about the current state, not catching up on missed polls.
             poll_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);

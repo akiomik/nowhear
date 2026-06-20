@@ -262,7 +262,7 @@ impl<P: PlayerStateProvider + 'static> MacOSMediaSource<P> {
 
         tokio::spawn(async move {
             let mut monitor = PlayerMonitor::new();
-            let mut interval = time::interval(Duration::from_millis(1000));
+            let mut interval = time::interval(Duration::from_secs(1));
             // Use Skip to avoid processing stale states when system is under load.
             // We only care about the current state, not catching up on missed polls.
             interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
@@ -1278,7 +1278,7 @@ mod tests {
                 album: Some("Led Zeppelin IV".to_string()),
                 album_artist: vec!["Led Zeppelin".to_string()],
                 track_number: Some(4),
-                duration: Some(Duration::from_millis(482_000)),
+                duration: Some(Duration::from_secs(482)),
                 art_url: Some("https://example.com/image/deadbeef".to_owned()),
             }
         );
@@ -1346,7 +1346,7 @@ mod tests {
                     album: Some("Spotify Album".to_string()),
                     album_artist: vec!["Spotify Album Artist".to_string()],
                     track_number: Some(7),
-                    duration: Some(Duration::from_millis(195_000)),
+                    duration: Some(Duration::from_secs(195)),
                     art_url: Some("https://example.com/image/deadbeef".to_owned()),
                 },
                 playback_state: PlaybackState::Playing,
@@ -1391,7 +1391,9 @@ mod tests {
 
         // Both should represent the same duration
         assert_eq!(music_track.duration, Some(Duration::from_secs(180)));
-        assert_eq!(spotify_track.duration, Some(Duration::from_millis(180_000)));
+        #[allow(clippy::duration_suboptimal_units)]
+        let expected_spotify_duration = Duration::from_millis(180_000);
+        assert_eq!(spotify_track.duration, Some(expected_spotify_duration));
         assert_eq!(music_track.duration, spotify_track.duration);
     }
 }
