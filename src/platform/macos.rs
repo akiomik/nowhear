@@ -1391,9 +1391,7 @@ mod tests {
 
         // Both should represent the same duration
         assert_eq!(music_track.duration, Some(Duration::from_secs(180)));
-        #[allow(clippy::duration_suboptimal_units)]
-        let expected_spotify_duration = Duration::from_millis(180_000);
-        assert_eq!(spotify_track.duration, Some(expected_spotify_duration));
+        assert_eq!(spotify_track.duration, Some(Duration::from_secs(180)));
         assert_eq!(music_track.duration, spotify_track.duration);
     }
 }
