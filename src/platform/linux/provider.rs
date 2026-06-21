@@ -406,11 +406,20 @@ impl PlayerDiscoveryProvider for MprisProvider {
 
             loop {
                 tokio::select! {
+                    // Stop as soon as the consumer drops the stream, even while every signal stream
+                    // is idle. Without this arm the task only notices a dropped receiver when the
+                    // next signal happens to arrive and a send fails, so a paused or idle player
+                    // would keep this task — and its D-Bus match rules and connection handle —
+                    // alive indefinitely.
+                    () = tx.closed() => break,
                     Some(msg) = property_changed_stream.next() => {
                         let events = Self::handle_property_changed_message(&msg?, &player_name_cache)?;
                         for event in events {
                             if tx.send(event).is_err() {
-                                break;
+                                // Receiver dropped mid-batch: tear down the whole task. A plain
+                                // `break` here would only exit the `for`, leaving the outer loop
+                                // spinning until another signal arrived.
+                                return Ok(());
                             }
                         }
                     }

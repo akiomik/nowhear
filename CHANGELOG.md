@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Linux: A `PropertiesChanged` or `Seeked` signal from a player missing from the internal name cache no longer terminates the entire event stream. Such signals can race ahead of the `NameOwnerChanged` that populates the cache, or trail a player's removal; they are now skipped instead of propagating a fatal error
+- Linux: The event-stream background task now shuts down promptly when the consumer drops the stream, and no longer leaks (the task, its D-Bus match rules, and its connection handle) when an idle player sends no further signals. A send-failure inside the `PropertiesChanged` handler now tears down the task instead of leaving the loop spinning
 
 ## [0.2.0] - 2026-02-03
 
