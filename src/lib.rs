@@ -63,6 +63,15 @@
 //!     Ok(())
 //! }
 //! ```
+//!
+//! ## Feature Flags
+//!
+//! | Feature | Description |
+//! |---------|-------------|
+//! | `tracing` | Enables diagnostic instrumentation via the [`tracing`](https://docs.rs/tracing) crate. When enabled, the library emits `debug`- and `warn`-level events for background task lifecycle, silently skipped errors, and platform-specific failures. Attach any [`tracing`](https://docs.rs/tracing) subscriber (e.g. [`tracing_subscriber`](https://docs.rs/tracing-subscriber)) in your application to consume these events. |
+
+#[macro_use]
+mod macros;
 
 pub mod error;
 pub mod source;

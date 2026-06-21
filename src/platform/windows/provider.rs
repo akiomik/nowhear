@@ -124,6 +124,7 @@ impl WindowsMediaControlProvider {
                 MediaSourceError::ConnectionError(format!("Failed to await session manager: {e}"))
             })?;
 
+        debug!("Windows Media Control session manager initialized");
         Ok(Self { manager })
     }
 
@@ -142,8 +143,14 @@ impl WindowsMediaControlProvider {
 
         let mut result = Vec::new();
         for i in 0..size {
-            if let Ok(session) = sessions.GetAt(i) {
-                result.push(session);
+            match sessions.GetAt(i) {
+                Ok(session) => result.push(session),
+                Err(e) => {
+                    #[cfg(feature = "tracing")]
+                    tracing::debug!(index = i, error = %e, "failed to get session at index, skipping");
+                    #[cfg(not(feature = "tracing"))]
+                    let _ = e;
+                }
             }
         }
 
@@ -275,6 +282,7 @@ impl MediaSessionProvider for WindowsMediaControlProvider {
         let (raw_tx, raw_rx) = mpsc::unbounded_channel();
 
         tokio::spawn(async move {
+            debug!("starting Windows Media Control event stream task");
             // Register SessionsChanged BEFORE the initial scan so any session change during the
             // scan window is queued as a RawNotification and processed (in order) by the loop
             // afterwards. The callback is now trivial: it does no I/O and touches no shared state,
@@ -293,6 +301,12 @@ impl MediaSessionProvider for WindowsMediaControlProvider {
                     token,
                 });
 
+            if sessions_changed_guard.is_none() {
+                warn!(
+                    "failed to register SessionsChanged handler; player adds/removes may not be detected"
+                );
+            }
+
             // The monitor owns all mutable state (the session map and the per-session state
             // cache) and is touched only by this one task. That single-owner design is what lets
             // the previous Arc<Mutex>, two AtomicBools, and the lock-before-snapshot ordering dance
@@ -305,6 +319,7 @@ impl MediaSessionProvider for WindowsMediaControlProvider {
             // dropping the guard; dropping `monitor` deregisters every per-session handler via
             // SessionEntry::drop. The guard also deregisters during unwinding if this task panics,
             // so a callback can never fire into an orphaned closure.
+            debug!("Windows Media Control event stream task shutting down");
             drop(sessions_changed_guard);
         });
 
@@ -406,6 +421,7 @@ impl EventDrivenPlayerMonitor {
         let Ok(sessions_with_ids) =
             WindowsMediaControlProvider::get_sessions_from_manager(&self.manager)
         else {
+            warn!("failed to enumerate media sessions");
             return false;
         };
 
@@ -442,6 +458,8 @@ impl EventDrivenPlayerMonitor {
             if entry.is_fully_registered() {
                 self.sessions.insert(id.clone(), entry);
                 pending.push((id, session));
+            } else {
+                warn!(player = %id, "failed to register all event handlers for session, will retry on next SessionsChanged");
             }
         }
 
@@ -462,6 +480,7 @@ impl EventDrivenPlayerMonitor {
                 // FIXME: if no SessionsChanged fires after this (player already running and
                 // stable), this session stays untracked for the stream's lifetime. A per-session
                 // background retry would fix it but adds significant complexity.
+                warn!(player = %id, "failed to read initial session state, will retry on next SessionsChanged");
                 self.sessions.remove(&id);
                 continue;
             };
@@ -513,6 +532,7 @@ impl EventDrivenPlayerMonitor {
             WindowsMediaControlProvider::get_session_state_bounded(&entry.session).await
         else {
             // Read failed or timed out: skip; a later notification retries.
+            debug!(player = %id, "failed to read session state, skipping notification");
             return;
         };
 
