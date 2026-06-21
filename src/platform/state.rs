@@ -46,10 +46,10 @@ fn is_seek(last_position: Option<Duration>, current_position: Duration) -> bool 
 /// A single pure function that turns "the state changed somehow" into the discrete
 /// [`MediaEvent`]s that actually differ. Backends that learn of changes without a delta (e.g. the
 /// Windows "something changed, re-read everything" notifications) read the full state and call
-/// this. Events are ordered `TrackChanged`, `StateChanged`, `PositionChanged`.
+/// this. Events are ordered `TrackChanged`, `StateChanged`, `PositionChanged`, `VolumeChanged`.
 ///
 /// `old` is `None` only when no prior state is cached. Callers that always emit a baseline on
-/// first discovery (as the Windows backend does) won't pass `None` here.
+/// first discovery (as the Windows and macOS backends do) won't pass `None` here.
 pub fn diff_player_state(
     player_name: &str,
     old: Option<&PlayerState>,
@@ -87,6 +87,19 @@ pub fn diff_player_state(
                 position,
             });
         }
+    }
+
+    // Volume is only diffed against a known previous value; a first-sight baseline (old is None)
+    // is emitted by the caller, not here. Backends without a volume notion (e.g. Windows, where it
+    // is always None) never produce a VolumeChanged because the value never differs.
+    if let Some(old) = old
+        && old.volume != new.volume
+        && let Some(volume) = new.volume
+    {
+        events.push(MediaEvent::VolumeChanged {
+            player_name: player_name.to_string(),
+            volume,
+        });
     }
 
     events
@@ -309,6 +322,40 @@ mod tests {
         let mut new = old.clone();
         // 1-second advance during normal playback is not a seek.
         new.position = Some(Duration::from_secs(11));
+        let events = diff_player_state("p", Some(&old), &new);
+        assert_eq!(events, Vec::<MediaEvent>::new());
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn test_diff_player_state_volume_change_only() {
+        let mut old = create_test_state_for_windows(
+            create_test_track_for_windows("Song"),
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+        );
+        old.volume = Some(0.8);
+        let mut new = old.clone();
+        new.volume = Some(0.5);
+        let events = diff_player_state("p", Some(&old), &new);
+        assert_eq!(
+            events,
+            vec![MediaEvent::VolumeChanged {
+                player_name: "p".to_string(),
+                volume: 0.5,
+            }]
+        );
+    }
+
+    #[test]
+    fn test_diff_player_state_volume_absent_not_emitted() {
+        // Both volumes None (e.g. the Windows backend): never emits VolumeChanged.
+        let old = create_test_state_for_windows(
+            create_test_track_for_windows("Song"),
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+        );
+        let new = old.clone();
         let events = diff_player_state("p", Some(&old), &new);
         assert_eq!(events, Vec::<MediaEvent>::new());
     }
