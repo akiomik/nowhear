@@ -116,7 +116,7 @@ mod tests {
             album: Some("Test Album".to_string()),
             album_artist: vec![],
             track_number: None,
-            duration: Some(Duration::from_secs(180)),
+            duration: Some(Duration::from_mins(3)),
             art_url: None,
         }
     }
@@ -145,7 +145,7 @@ mod tests {
     fn test_track_identity_changed_same_identity() {
         let track = create_test_track_for_windows("Song");
         let mut updated = track.clone();
-        updated.duration = Some(Duration::from_secs(300)); // duration changed
+        updated.duration = Some(Duration::from_mins(5)); // duration changed
         updated.art_url = Some("http://example.com/art.jpg".to_string());
         assert!(!track_identity_changed(Some(&track), &updated));
     }
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn test_is_seek_backward_jump() {
-        let last = Some(Duration::from_secs(60));
+        let last = Some(Duration::from_mins(1));
         assert!(is_seek(last, Duration::from_secs(10)));
     }
 
@@ -234,7 +234,7 @@ mod tests {
         let old = create_test_state_for_windows(
             create_test_track_for_windows("Old"),
             PlaybackState::Playing,
-            Some(Duration::from_secs(120)),
+            Some(Duration::from_mins(2)),
         );
         let new = create_test_state_for_windows(
             create_test_track_for_windows("New"),
@@ -301,13 +301,13 @@ mod tests {
             Some(Duration::from_secs(10)),
         );
         let mut new = old.clone();
-        new.position = Some(Duration::from_secs(60));
+        new.position = Some(Duration::from_mins(1));
         let events = diff_player_state("p", Some(&old), &new);
         assert_eq!(
             events,
             vec![MediaEvent::PositionChanged {
                 player_name: "p".to_string(),
-                position: Duration::from_secs(60),
+                position: Duration::from_mins(1),
             }]
         );
     }

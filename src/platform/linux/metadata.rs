@@ -339,7 +339,7 @@ mod tests {
                 album: Some("Test Album".to_string()),
                 album_artist: vec!["Album Artist".to_string()],
                 track_number: Some(5),
-                duration: Some(Duration::from_secs(180)),
+                duration: Some(Duration::from_mins(3)),
                 art_url: Some("file:///path/to/art.jpg".to_string()),
             }
         );
