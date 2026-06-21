@@ -413,23 +413,35 @@ impl PlayerDiscoveryProvider for MprisProvider {
                     // alive indefinitely.
                     () = tx.closed() => break,
                     Some(msg) = property_changed_stream.next() => {
-                        let events = Self::handle_property_changed_message(&msg?, &player_name_cache)?;
-                        for event in events {
-                            if tx.send(event).is_err() {
-                                // Receiver dropped mid-batch: tear down the whole task. A plain
-                                // `break` here would only exit the `for`, leaving the outer loop
-                                // spinning until another signal arrived.
-                                return Ok(());
+                        // A single undecodable message (stream-level error) or one that fails to
+                        // parse must not tear down the whole stream; skip it and keep monitoring.
+                        // Each poll advances past the offending message, so this cannot spin.
+                        if let Ok(msg) = msg
+                            && let Ok(events) = Self::handle_property_changed_message(&msg, &player_name_cache)
+                        {
+                            for event in events {
+                                if tx.send(event).is_err() {
+                                    // Receiver dropped mid-batch: tear down the whole task. A plain
+                                    // `break` here would only exit the `for`, leaving the outer loop
+                                    // spinning until another signal arrived.
+                                    return Ok(());
+                                }
                             }
                         }
                     }
                     Some(msg) = name_owner_changed_stream.next() => {
-                        if let Some(event) = Self::handle_name_owner_changed_message(&msg?, &mut player_name_cache)? && tx.send(event).is_err() {
+                        if let Ok(msg) = msg
+                            && let Ok(Some(event)) = Self::handle_name_owner_changed_message(&msg, &mut player_name_cache)
+                            && tx.send(event).is_err()
+                        {
                             break;
                         }
                     }
                     Some(msg) = seeked_stream.next() => {
-                        if let Some(event) = Self::handle_seeked_message(&msg?, &player_name_cache)? && tx.send(event).is_err() {
+                        if let Ok(msg) = msg
+                            && let Ok(Some(event)) = Self::handle_seeked_message(&msg, &player_name_cache)
+                            && tx.send(event).is_err()
+                        {
                             break;
                         }
                     }
