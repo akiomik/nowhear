@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-21
+
 ### Changed
 
 - Windows: Migrated from polling-based to fully event-driven architecture using Windows Runtime event handlers (`SessionsChanged`, `MediaPropertiesChanged`, `PlaybackInfoChanged`, `TimelinePropertiesChanged`) for real-time updates with improved performance and reduced resource usage
@@ -84,7 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Windows: Windows Media Control API support
 - Two example applications: `basic` and `stream`
 
-[unreleased]: https://github.com/akiomik/nowhear/compare/v0.2.0...HEAD
+[unreleased]: https://github.com/akiomik/nowhear/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/akiomik/nowhear/releases/tag/v0.3.0
 [0.2.0]: https://github.com/akiomik/nowhear/releases/tag/v0.2.0
 [0.1.3]: https://github.com/akiomik/nowhear/releases/tag/v0.1.3
 [0.1.2]: https://github.com/akiomik/nowhear/releases/tag/v0.1.2
