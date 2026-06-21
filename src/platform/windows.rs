@@ -1,19 +1,22 @@
 //! Windows-specific implementation using Windows Media Control API.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 use std::time::Duration;
 
 use futures::future;
 use futures::stream::Stream;
-use tokio::sync::mpsc;
-use tokio::time::{MissedTickBehavior, interval, sleep};
+use tokio::runtime::Handle;
+use tokio::sync::{Mutex, mpsc};
+use tokio::time::{sleep, timeout};
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use windows::Foundation::IStringable;
+use windows::Foundation::{IStringable, TypedEventHandler};
 use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSession as WinSession,
     GlobalSystemMediaTransportControlsSessionManager as SessionManager,
+    GlobalSystemMediaTransportControlsSessionMediaProperties as WinMediaProperties,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as WinPlaybackStatus,
 };
 use windows::core::Interface;
@@ -21,6 +24,13 @@ use windows::core::Interface;
 use crate::error::{MediaSourceError, Result};
 use crate::source::{EventStream, MediaSource};
 use crate::types::{MediaEvent, PlaybackState, PlayerInfo, Track};
+
+/// Upper bound on how long a single `get_session_state` read may take.
+///
+/// The session-discovery path reads state while holding the monitor lock, so a player whose
+/// WinRT async call never resolves would otherwise block all further session updates. Bounding
+/// the read caps that stall and lets discovery of other players proceed.
+const SESSION_STATE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Internal player state representation for Windows implementation.
 ///
@@ -32,6 +42,76 @@ pub struct PlayerState {
     pub playback_state: PlaybackState,
     pub position: Option<Duration>,
     pub volume: Option<f64>,
+}
+
+/// Windows media session with its identifier.
+///
+/// This structure pairs a session ID with its corresponding Windows session object,
+/// avoiding redundant ID extraction operations.
+struct SessionWithId {
+    id: String,
+    session: WinSession,
+}
+
+/// Cached playback state shared across all event handlers for a single session.
+struct SessionState {
+    track: Option<Track>,
+    position: Option<Duration>,
+    playback_state: PlaybackState,
+}
+
+/// Per-session state and event handler tokens for event-driven monitoring.
+///
+/// The Drop impl sets `removed = true` first (so in-flight spawned tasks see it) then
+/// deregisters all registered event handlers, preventing new WinRT callbacks after removal.
+/// Tokens are `Option<i64>`: `None` means the handler was never registered (e.g., due
+/// to a transient API error); Drop skips deregistration in that case.
+struct SessionEntry {
+    session: WinSession,
+    removed: Arc<AtomicBool>,
+    token_media_props: Option<i64>,
+    token_playback_info: Option<i64>,
+    token_timeline: Option<i64>,
+}
+
+impl SessionEntry {
+    const fn is_fully_registered(&self) -> bool {
+        self.token_media_props.is_some()
+            && self.token_playback_info.is_some()
+            && self.token_timeline.is_some()
+    }
+}
+
+impl Drop for SessionEntry {
+    fn drop(&mut self) {
+        // Signal removed before deregistering so already-queued spawned tasks skip sending.
+        self.removed.store(true, Ordering::Release);
+        if let Some(token) = self.token_media_props {
+            let _ = self.session.RemoveMediaPropertiesChanged(token);
+        }
+        if let Some(token) = self.token_playback_info {
+            let _ = self.session.RemovePlaybackInfoChanged(token);
+        }
+        if let Some(token) = self.token_timeline {
+            let _ = self.session.RemoveTimelinePropertiesChanged(token);
+        }
+    }
+}
+
+/// RAII guard that deregisters the manager-level `SessionsChanged` handler on drop.
+///
+/// Holding the registration in a guard ensures the handler is removed even if the monitor task
+/// panics or is cancelled before its normal teardown, so the Windows OS never keeps firing
+/// `SessionsChanged` callbacks into a closure whose state has been orphaned.
+struct SessionsChangedGuard {
+    manager: SessionManager,
+    token: i64,
+}
+
+impl Drop for SessionsChangedGuard {
+    fn drop(&mut self) {
+        let _ = self.manager.RemoveSessionsChanged(self.token);
+    }
 }
 
 /// Internal trait for abstracting media session access.
@@ -94,7 +174,78 @@ impl WindowsMediaControlProvider {
         Ok(app_id.to_string())
     }
 
-    #[allow(clippy::cast_sign_loss)]
+    fn build_track(media_props: &WinMediaProperties, duration: Option<Duration>) -> Track {
+        let title = media_props.Title().unwrap_or_default().to_string();
+
+        let artist_hstring = media_props.Artist().unwrap_or_default();
+        let artist = if artist_hstring.is_empty() {
+            vec![]
+        } else {
+            let s = artist_hstring.to_string();
+            if s.is_empty() { vec![] } else { vec![s] }
+        };
+
+        let album_title = media_props.AlbumTitle().ok();
+        let album = album_title.map(|s| s.to_string()).filter(|s| !s.is_empty());
+
+        let track_number = media_props
+            .TrackNumber()
+            .ok()
+            .and_then(|n| u32::try_from(n).ok());
+
+        let art_url = media_props
+            .Thumbnail()
+            .ok()
+            .and_then(|thumb| {
+                thumb
+                    .cast::<IStringable>()
+                    .ok()
+                    .and_then(|stringable| stringable.ToString().ok())
+                    .map(|s| s.to_string())
+            })
+            .filter(|s: &String| !s.is_empty());
+
+        Track {
+            title: if title.is_empty() {
+                "Unknown".to_string()
+            } else {
+                title
+            },
+            artist,
+            album,
+            album_artist: vec![],
+            track_number,
+            duration,
+            art_url,
+        }
+    }
+
+    /// Fetches only the track metadata for a session, without reading playback info.
+    ///
+    /// Used in the `MediaPropertiesChanged` handler so that a transient failure in
+    /// `GetPlaybackInfo` or `GetTimelineProperties` does not silently drop a track-change
+    /// event. `Track.duration` is populated from `EndTime` if available but is not required.
+    async fn get_track_from_session(session: &WinSession) -> Result<Track> {
+        let media_props = session
+            .TryGetMediaPropertiesAsync()
+            .map_err(|e| {
+                MediaSourceError::ParseError(format!("Failed to get media properties: {e}"))
+            })?
+            .await
+            .map_err(|e| {
+                MediaSourceError::ParseError(format!("Failed to await media properties: {e}"))
+            })?;
+
+        let duration = session
+            .GetTimelineProperties()
+            .ok()
+            .and_then(|t| t.EndTime().ok())
+            .filter(|t| t.Duration > 0)
+            .and_then(|t| ticks_to_duration(t.Duration));
+
+        Ok(Self::build_track(&media_props, duration))
+    }
+
     async fn get_session_state(session: &WinSession) -> Result<PlayerState> {
         let media_props = session
             .TryGetMediaPropertiesAsync()
@@ -118,61 +269,58 @@ impl WindowsMediaControlProvider {
             .GetTimelineProperties()
             .map_err(|e| MediaSourceError::ParseError(format!("Failed to get timeline: {e}")))?;
 
-        let title = media_props.Title().unwrap_or_default().to_string();
-
-        let artist_hstring = media_props.Artist().unwrap_or_default();
-        let artist = if artist_hstring.is_empty() {
-            vec![]
-        } else {
-            let s = artist_hstring.to_string();
-            if s.is_empty() { vec![] } else { vec![s] }
-        };
-
-        let album_title = media_props.AlbumTitle().ok();
-        let album = album_title.map(|s| s.to_string()).filter(|s| !s.is_empty());
-
-        let track_number = media_props.TrackNumber().ok().map(|number| number as u32);
-
-        let art_url = media_props
-            .Thumbnail()
+        let position = timeline
+            .Position()
             .ok()
-            .and_then(|thumb| {
-                thumb
-                    .cast::<IStringable>()
-                    .ok()
-                    .and_then(|stringable| stringable.ToString().ok())
-                    .map(|s| s.to_string())
-            })
-            .filter(|s: &String| !s.is_empty());
-
-        let position_ticks = timeline.Position().ok();
-        let position =
-            position_ticks.map(|ticks| Duration::from_nanos((ticks.Duration as u64) * 100));
-
-        let end_time_ticks = timeline.EndTime().ok();
-        let duration =
-            end_time_ticks.map(|ticks| Duration::from_nanos((ticks.Duration as u64) * 100));
-
-        let track = Track {
-            title: if title.is_empty() {
-                "Unknown".to_string()
-            } else {
-                title
-            },
-            artist,
-            album,
-            album_artist: vec![],
-            track_number,
-            duration,
-            art_url,
-        };
+            .and_then(|t| ticks_to_duration(t.Duration));
+        let duration = timeline
+            .EndTime()
+            .ok()
+            .filter(|t| t.Duration > 0)
+            .and_then(|t| ticks_to_duration(t.Duration));
 
         Ok(PlayerState {
-            track,
+            track: Self::build_track(&media_props, duration),
             playback_state: parse_playback_status(playback_status),
             position,
             volume: None,
         })
+    }
+
+    /// [`get_session_state`](Self::get_session_state) bounded by [`SESSION_STATE_TIMEOUT`].
+    ///
+    /// A hung player whose WinRT async read never resolves would otherwise stall the monitor
+    /// lock indefinitely; on timeout this returns an error so the caller skips the session and
+    /// retries on the next `SessionsChanged` event.
+    async fn get_session_state_bounded(session: &WinSession) -> Result<PlayerState> {
+        timeout(SESSION_STATE_TIMEOUT, Self::get_session_state(session))
+            .await
+            .unwrap_or_else(|_| {
+                Err(MediaSourceError::ConnectionError(
+                    "Timed out reading session state".to_string(),
+                ))
+            })
+    }
+
+    fn get_sessions_from_manager(manager: &SessionManager) -> Result<Vec<SessionWithId>> {
+        let sessions = manager.GetSessions().map_err(|e| {
+            MediaSourceError::ConnectionError(format!("Failed to get sessions: {e}"))
+        })?;
+
+        let mut result = Vec::new();
+        let size = sessions.Size().map_err(|e| {
+            MediaSourceError::ConnectionError(format!("Failed to get sessions size: {e}"))
+        })?;
+
+        for i in 0..size {
+            if let Ok(session) = sessions.GetAt(i)
+                && let Ok(id) = Self::get_session_id(&session)
+            {
+                result.push(SessionWithId { id, session });
+            }
+        }
+
+        Ok(result)
     }
 }
 
@@ -212,71 +360,77 @@ impl MediaSessionProvider for WindowsMediaControlProvider {
         Err(MediaSourceError::PlayerNotFound(session_id.to_string()))
     }
 
+    // The SessionsChanged/initial-scan tasks deliberately hold the monitor guard across the
+    // session-list snapshot to preserve monotonic ordering, which trips significant_drop_tightening.
+    #[allow(clippy::significant_drop_tightening)]
     fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send + 'static {
         let manager = self.manager.clone();
         let (tx, rx) = mpsc::unbounded_channel();
 
         tokio::spawn(async move {
-            let mut monitor = PlayerMonitor::new();
-            let mut poll_interval = interval(Duration::from_secs(1));
-            // Use Skip to avoid processing stale states when system is under load.
-            // We only care about the current state, not catching up on missed polls.
-            poll_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            let monitor = Arc::new(Mutex::new(EventDrivenPlayerMonitor::new(tx.clone())));
 
-            loop {
-                poll_interval.tick().await;
+            // Register SessionsChanged BEFORE the initial scan so that any session change
+            // during the scan window is queued and processed after the scan completes.
+            // The Mutex on EventDrivenPlayerMonitor serialises the two update_sessions calls.
+            let manager_clone = manager.clone();
+            let monitor_clone = monitor.clone();
+            let handle = Handle::current();
+            let sessions_changed_guard = manager
+                .SessionsChanged(&TypedEventHandler::new(move |_sender, _args| {
+                    let manager = manager_clone.clone();
+                    let monitor = monitor_clone.clone();
+                    let handle = handle.clone();
 
-                let sessions_vec = {
-                    let sessions_result = manager.GetSessions();
-                    sessions_result.map_or_else(
-                        |_| None,
-                        |sessions| {
-                            let size_result = sessions.Size();
-                            let mut vec = Vec::new();
-                            if let Ok(size) = size_result {
-                                for i in 0..size {
-                                    if let Ok(session) = sessions.GetAt(i) {
-                                        vec.push(session);
-                                    }
-                                }
-                            }
-                            Some(vec)
-                        },
-                    )
-                };
+                    // Acquire the monitor lock BEFORE snapshotting the session list. Taking the
+                    // snapshot under the lock makes concurrent SessionsChanged tasks observe the
+                    // list in the same order they apply it, so an older snapshot can never
+                    // overwrite a newer one and spuriously emit PlayerRemoved for a live session.
+                    // We always fetch the full list rather than trusting the event args.
+                    handle.spawn(async move {
+                        // The guard is intentionally acquired before the snapshot and held across
+                        // it; tightening the lock scope would reintroduce the stale-snapshot race.
+                        let mut guard = monitor.lock().await;
+                        if let Ok(sessions_with_ids) = Self::get_sessions_from_manager(&manager) {
+                            guard.update_sessions(sessions_with_ids).await;
+                        }
+                    });
+                    Ok(())
+                }))
+                .ok()
+                .map(|token| SessionsChangedGuard {
+                    manager: manager.clone(),
+                    token,
+                });
 
-                let Some(sessions_vec) = sessions_vec else {
-                    sleep(Duration::from_secs(1)).await;
-                    continue;
-                };
-
-                let mut current_states = HashMap::new();
-                let mut futures = Vec::new();
-                let mut session_ids = Vec::new();
-
-                for session in &sessions_vec {
-                    if let Ok(session_id) = Self::get_session_id(session) {
-                        session_ids.push(session_id);
-                        futures.push(Self::get_session_state(session));
-                    }
+            // Initial session scan — retry up to 3 times on transient failure.
+            // Without retry, a player already running at startup is invisible until
+            // the next SessionsChanged event fires.
+            // TODO: if all 3 attempts fail and no SessionsChanged fires afterward (i.e. only
+            // one player is running and it never changes), already-running sessions will remain
+            // invisible for the entire stream lifetime. Polling at a long interval as a fallback
+            // would close this gap, but reintroduces the complexity that the event-driven
+            // architecture was designed to eliminate.
+            for attempt in 0..3u32 {
+                // Snapshot under the lock for the same monotonic-ordering reason as the
+                // SessionsChanged handler above.
+                let mut guard = monitor.lock().await;
+                if let Ok(sessions_with_ids) = Self::get_sessions_from_manager(&manager) {
+                    guard.update_sessions(sessions_with_ids).await;
+                    break;
                 }
-
-                let results = future::join_all(futures).await;
-
-                for (session_id, result) in session_ids.into_iter().zip(results) {
-                    if let Ok(state) = result {
-                        current_states.insert(session_id, state);
-                    }
-                }
-
-                let events = monitor.process_sessions(current_states);
-
-                for event in events {
-                    if tx.send(event).is_err() {
-                        return;
-                    }
+                drop(guard);
+                if attempt < 2 {
+                    sleep(Duration::from_millis(500)).await;
                 }
             }
+
+            // Wait until the consumer drops the stream, then deregister SessionsChanged by
+            // dropping the guard. The guard also deregisters during unwinding if this task panics
+            // or is cancelled before reaching this point, so a callback can never fire into an
+            // orphaned closure.
+            tx.closed().await;
+            drop(sessions_changed_guard);
         });
 
         UnboundedReceiverStream::new(rx)
@@ -300,9 +454,13 @@ impl MediaSessionProvider for WindowsMediaControlProvider {
 ///
 /// # Implementation Details
 ///
-/// The implementation polls for changes every 1 second to detect state changes.
-/// Windows does not provide reliable event notifications for all media state changes,
-/// so polling is used to ensure consistent behavior.
+/// The implementation is fully event-driven using Windows Runtime event handlers:
+/// - `SessionsChanged`: Detects new or removed media players
+/// - `MediaPropertiesChanged`: Detects track changes
+/// - `PlaybackInfoChanged`: Detects playback state changes (play/pause/stop)
+/// - `TimelinePropertiesChanged`: Detects position changes (seeking)
+///
+/// This provides real-time updates with minimal resource usage and no polling overhead.
 ///
 /// # Note
 ///
@@ -313,112 +471,323 @@ pub struct WindowsMediaSource<P: MediaSessionProvider = WindowsMediaControlProvi
     provider: Arc<P>,
 }
 
-struct PlayerMonitor {
-    players: HashMap<String, PlayerState>,
+/// Event-driven player monitor using Windows Runtime event handlers.
+struct EventDrivenPlayerMonitor {
+    sessions: HashMap<String, SessionEntry>,
+    event_tx: mpsc::UnboundedSender<MediaEvent>,
 }
 
-impl PlayerMonitor {
-    fn new() -> Self {
+impl EventDrivenPlayerMonitor {
+    fn new(event_tx: mpsc::UnboundedSender<MediaEvent>) -> Self {
         Self {
-            players: HashMap::new(),
+            sessions: HashMap::new(),
+            event_tx,
         }
     }
 
-    fn process_sessions(
-        &mut self,
-        current_sessions: HashMap<String, PlayerState>,
-    ) -> Vec<MediaEvent> {
-        let mut events = Vec::new();
+    async fn update_sessions(&mut self, sessions_with_ids: Vec<SessionWithId>) {
+        let current_ids: HashSet<_> = sessions_with_ids.iter().map(|s| s.id.clone()).collect();
+        let previous_ids: HashSet<_> = self.sessions.keys().cloned().collect();
 
-        // Check for new and changed players
-        for (session_id, current_state) in &current_sessions {
-            if let Some(last_state) = self.players.get(session_id) {
-                // Existing player - detect changes
-                Self::detect_changes(session_id, last_state, current_state, &mut events);
-            } else {
-                // New player
-                events.push(MediaEvent::PlayerAdded {
-                    player_name: session_id.clone(),
-                });
-                events.push(MediaEvent::TrackChanged {
-                    player_name: session_id.clone(),
-                    track: current_state.track.clone(),
-                });
-                events.push(MediaEvent::StateChanged {
-                    player_name: session_id.clone(),
-                    state: current_state.playback_state,
-                });
-            }
+        // Remove stale sessions. SessionEntry::drop sets removed=true then deregisters handlers.
+        for removed_id in previous_ids.difference(&current_ids) {
+            self.sessions.remove(removed_id.as_str());
+            let _ = self.event_tx.send(MediaEvent::PlayerRemoved {
+                player_name: removed_id.clone(),
+            });
         }
 
-        // Check for removed players
-        let removed_players: Vec<String> = self
-            .players
-            .keys()
-            .filter(|id| !current_sessions.contains_key(*id))
-            .cloned()
+        // Collect new sessions (not yet tracked) and fetch their states in parallel
+        // so that a slow or hung player does not block discovery of others.
+        let new_sessions: Vec<SessionWithId> = sessions_with_ids
+            .into_iter()
+            .filter(|s| !self.sessions.contains_key(&s.id))
             .collect();
 
-        for player_id in removed_players {
-            events.push(MediaEvent::PlayerRemoved {
-                player_name: player_id.clone(),
-            });
-            self.players.remove(&player_id);
-        }
+        let states = future::join_all(
+            new_sessions
+                .iter()
+                .map(|s| WindowsMediaControlProvider::get_session_state_bounded(&s.session)),
+        )
+        .await;
 
-        // Update stored states
-        self.players = current_sessions;
+        for (session_with_id, state_result) in new_sessions.into_iter().zip(states) {
+            let Ok(initial_state) = state_result else {
+                // On failure, skip insertion so the next SessionsChanged event retries.
+                // FIXME: if no SessionsChanged fires after this (the player is already running
+                // and stable), this session is permanently untracked for the lifetime of the
+                // stream. A background retry task per failed session would fix this, but adds
+                // significant complexity.
+                continue;
+            };
 
-        events
-    }
+            let session_id = session_with_id.id;
+            let session = session_with_id.session;
 
-    fn detect_changes(
-        player_name: &str,
-        last: &PlayerState,
-        current: &PlayerState,
-        events: &mut Vec<MediaEvent>,
-    ) {
-        // Check for track change
-        if last.track != current.track {
-            events.push(MediaEvent::TrackChanged {
-                player_name: player_name.to_string(),
-                track: current.track.clone(),
-            });
-        }
+            let removed = Arc::new(AtomicBool::new(false));
+            // Handlers are registered below but must not emit until PlayerAdded has been sent.
+            // Otherwise a handler firing during the registration/re-read window could push
+            // TrackChanged/StateChanged/PositionChanged into the channel before PlayerAdded,
+            // leaving the consumer with events for a player it has not seen added yet.
+            // `ready` gates handler emissions; it is flipped to true only after PlayerAdded.
+            let ready = Arc::new(AtomicBool::new(false));
+            let session_state = Arc::new(StdMutex::new(SessionState {
+                track: Some(initial_state.track.clone()),
+                position: initial_state.position,
+                playback_state: initial_state.playback_state,
+            }));
 
-        // Check for playback state change
-        if last.playback_state != current.playback_state {
-            events.push(MediaEvent::StateChanged {
-                player_name: player_name.to_string(),
-                state: current.playback_state,
-            });
-        }
+            let entry = self.register_event_handlers(
+                session,
+                &session_id,
+                &Arc::clone(&session_state),
+                Arc::clone(&removed),
+                &ready,
+            );
 
-        // Check for position change (seek detection)
-        if let Some(current_pos) = current.position {
-            let should_emit = last.position.is_none_or(|last_pos| {
-                // Detect seek: position difference > 2 seconds
-                let diff = current_pos.abs_diff(last_pos);
-                diff > Duration::from_secs(2)
-            });
+            // Only insert and emit events when all three handlers registered successfully.
+            // If any token is None the session is not inserted, so the next SessionsChanged
+            // event will retry. SessionEntry::drop cleans up any partial registrations.
+            if entry.is_fully_registered() {
+                // Re-read state to catch any changes that occurred during the registration
+                // window (between the parallel get_session_state above and handler registration).
+                // Handlers stay gated by `ready` until PlayerAdded is sent, so any change they
+                // observe meanwhile updates the cache without emitting out-of-order events.
+                let emit_state =
+                    match WindowsMediaControlProvider::get_session_state_bounded(&entry.session)
+                        .await
+                    {
+                        Ok(current) => {
+                            let mut state =
+                                session_state.lock().unwrap_or_else(PoisonError::into_inner);
+                            state.track = Some(current.track.clone());
+                            state.position = current.position;
+                            state.playback_state = current.playback_state;
+                            current
+                        }
+                        Err(_) => initial_state,
+                    };
 
-            if should_emit {
-                events.push(MediaEvent::PositionChanged {
-                    player_name: player_name.to_string(),
-                    position: current_pos,
+                let _ = self.event_tx.send(MediaEvent::PlayerAdded {
+                    player_name: session_id.clone(),
                 });
+                let _ = self.event_tx.send(MediaEvent::TrackChanged {
+                    player_name: session_id.clone(),
+                    track: emit_state.track,
+                });
+                let _ = self.event_tx.send(MediaEvent::StateChanged {
+                    player_name: session_id.clone(),
+                    state: emit_state.playback_state,
+                });
+                // PlayerAdded is now queued ahead of any handler event; allow handlers to emit.
+                ready.store(true, Ordering::Release);
+                self.sessions.insert(session_id, entry);
             }
         }
+    }
 
-        // Check for volume change
-        if current.volume != last.volume
-            && let Some(vol) = current.volume
-        {
-            events.push(MediaEvent::VolumeChanged {
-                player_name: player_name.to_string(),
-                volume: vol,
-            });
+    fn register_event_handlers(
+        &self,
+        session: WinSession,
+        session_id: &str,
+        session_state: &Arc<StdMutex<SessionState>>,
+        removed: Arc<AtomicBool>,
+        ready: &Arc<AtomicBool>,
+    ) -> SessionEntry {
+        let tx = &self.event_tx;
+
+        let token_media_props = Self::register_media_properties_changed(
+            &session,
+            tx,
+            session_id,
+            Arc::clone(session_state),
+            Arc::clone(&removed),
+            Arc::clone(ready),
+        );
+        let token_playback_info = Self::register_playback_info_changed(
+            &session,
+            tx,
+            session_id,
+            Arc::clone(session_state),
+            Arc::clone(&removed),
+            Arc::clone(ready),
+        );
+        let token_timeline = Self::register_timeline_properties_changed(
+            &session,
+            tx,
+            session_id,
+            Arc::clone(session_state),
+            Arc::clone(&removed),
+            Arc::clone(ready),
+        );
+
+        SessionEntry {
+            session,
+            removed,
+            token_media_props,
+            token_playback_info,
+            token_timeline,
         }
+    }
+
+    fn register_media_properties_changed(
+        session: &WinSession,
+        tx: &mpsc::UnboundedSender<MediaEvent>,
+        player_name: &str,
+        session_state: Arc<StdMutex<SessionState>>,
+        removed: Arc<AtomicBool>,
+        ready: Arc<AtomicBool>,
+    ) -> Option<i64> {
+        let handle = Handle::current();
+        let tx = tx.clone();
+        let player_name = player_name.to_string();
+        let session_clone = session.clone();
+
+        session
+            .MediaPropertiesChanged(&TypedEventHandler::new(move |_sender, _args| {
+                let handle = handle.clone();
+                let tx = tx.clone();
+                let player_name = player_name.clone();
+                let session = session_clone.clone();
+                let session_state = Arc::clone(&session_state);
+                let removed = Arc::clone(&removed);
+                let ready = Arc::clone(&ready);
+
+                handle.spawn(async move {
+                    if let Ok(track) =
+                        WindowsMediaControlProvider::get_track_from_session(&session).await
+                    {
+                        let mut state =
+                            session_state.lock().unwrap_or_else(PoisonError::into_inner);
+                        if track_identity_changed(state.track.as_ref(), &track) {
+                            state.track = Some(track.clone());
+                            // Reset position atomically with the track update so that
+                            // any concurrent TimelinePropertiesChanged task that acquires
+                            // this lock after us sees position=None only after TrackChanged
+                            // is already in the channel (sent below while still holding the lock).
+                            state.position = None;
+                            // `ready` keeps emissions ordered after PlayerAdded for a new session.
+                            if ready.load(Ordering::Acquire) && !removed.load(Ordering::Acquire) {
+                                let _ = tx.send(MediaEvent::TrackChanged { player_name, track });
+                            }
+                        } else {
+                            // Metadata-only change (e.g. duration or art_url loaded late):
+                            // update the cache without emitting TrackChanged.
+                            state.track = Some(track);
+                        }
+                        // Lock releases here; position=None is now visible to timeline handler.
+                    }
+                });
+                Ok(())
+            }))
+            .ok()
+    }
+
+    fn register_playback_info_changed(
+        session: &WinSession,
+        tx: &mpsc::UnboundedSender<MediaEvent>,
+        player_name: &str,
+        session_state: Arc<StdMutex<SessionState>>,
+        removed: Arc<AtomicBool>,
+        ready: Arc<AtomicBool>,
+    ) -> Option<i64> {
+        let handle = Handle::current();
+        let tx = tx.clone();
+        let player_name = player_name.to_string();
+        let session_clone = session.clone();
+
+        session
+            .PlaybackInfoChanged(&TypedEventHandler::new(move |_sender, _args| {
+                let handle = handle.clone();
+                let tx = tx.clone();
+                let player_name = player_name.clone();
+                let session = session_clone.clone();
+                let session_state = Arc::clone(&session_state);
+                let removed = Arc::clone(&removed);
+                let ready = Arc::clone(&ready);
+
+                handle.spawn(async move {
+                    if let Ok(playback_info) = session.GetPlaybackInfo()
+                        && let Ok(status) = playback_info.PlaybackStatus()
+                    {
+                        let new_state = parse_playback_status(status);
+                        let mut state =
+                            session_state.lock().unwrap_or_else(PoisonError::into_inner);
+                        if state.playback_state != new_state {
+                            state.playback_state = new_state;
+                            drop(state);
+                            // `ready` keeps emissions ordered after PlayerAdded for a new session.
+                            if ready.load(Ordering::Acquire) && !removed.load(Ordering::Acquire) {
+                                let _ = tx.send(MediaEvent::StateChanged {
+                                    player_name,
+                                    state: new_state,
+                                });
+                            }
+                        }
+                    }
+                });
+                Ok(())
+            }))
+            .ok()
+    }
+
+    fn register_timeline_properties_changed(
+        session: &WinSession,
+        tx: &mpsc::UnboundedSender<MediaEvent>,
+        player_name: &str,
+        session_state: Arc<StdMutex<SessionState>>,
+        removed: Arc<AtomicBool>,
+        ready: Arc<AtomicBool>,
+    ) -> Option<i64> {
+        let handle = Handle::current();
+        let tx = tx.clone();
+        let player_name = player_name.to_string();
+        let session_clone = session.clone();
+
+        session
+            .TimelinePropertiesChanged(&TypedEventHandler::new(move |_sender, _args| {
+                let handle = handle.clone();
+                let tx = tx.clone();
+                let player_name = player_name.clone();
+                let session = session_clone.clone();
+                let session_state = Arc::clone(&session_state);
+                let removed = Arc::clone(&removed);
+                let ready = Arc::clone(&ready);
+
+                handle.spawn(async move {
+                    let Some(position) = session
+                        .GetTimelineProperties()
+                        .ok()
+                        .and_then(|t| t.Position().ok())
+                        .and_then(|t| ticks_to_duration(t.Duration))
+                    else {
+                        return;
+                    };
+
+                    let should_emit = {
+                        let mut state =
+                            session_state.lock().unwrap_or_else(PoisonError::into_inner);
+                        // `ready` keeps emissions ordered after PlayerAdded for a new session.
+                        if is_seek(state.position, position)
+                            && ready.load(Ordering::Acquire)
+                            && !removed.load(Ordering::Acquire)
+                        {
+                            state.position = Some(position);
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if should_emit {
+                        let _ = tx.send(MediaEvent::PositionChanged {
+                            player_name,
+                            position,
+                        });
+                    }
+                });
+                Ok(())
+            }))
+            .ok()
     }
 }
 
@@ -454,6 +823,41 @@ impl<P: MediaSessionProvider + 'static> MediaSource for WindowsMediaSource<P> {
         let stream = self.provider.create_event_stream();
         Ok(Box::pin(stream))
     }
+}
+
+/// Converts a Windows `TimeSpan` tick value (100-nanosecond units, i64) to a `Duration`.
+///
+/// Returns `None` for negative values (Windows sentinel for unavailable positions) and for
+/// values that would overflow `u64` when multiplied by 100 (e.g. `i64::MAX`, which Windows
+/// uses as a sentinel for unknown/infinite duration in live streams).
+#[allow(clippy::cast_sign_loss)]
+const fn ticks_to_duration(ticks: i64) -> Option<Duration> {
+    if ticks < 0 {
+        return None;
+    }
+    match (ticks as u64).checked_mul(100) {
+        Some(nanos) => Some(Duration::from_nanos(nanos)),
+        None => None,
+    }
+}
+
+/// Returns `true` when title or artist differs, indicating a genuine track change.
+///
+/// `Duration`, `art_url`, `track_number`, and `album` are metadata that can be updated late
+/// (e.g., a browser loading `EndTime` or album art after buffering) without the song changing.
+/// Comparing only `title` and `artist` prevents spurious `TrackChanged` events from those
+/// late-loading metadata updates.
+fn track_identity_changed(old: Option<&Track>, new: &Track) -> bool {
+    old.is_none_or(|o| o.title != new.title || o.artist != new.artist)
+}
+
+/// Returns `true` when a position change should be reported as a seek event.
+///
+/// Reports the first position unconditionally; thereafter only when the jump exceeds 2 seconds,
+/// matching the contract in `MediaEvent::PositionChanged` that normal playback progression is not
+/// emitted.
+fn is_seek(last_position: Option<Duration>, current_position: Duration) -> bool {
+    last_position.is_none_or(|last| current_position.abs_diff(last) > Duration::from_secs(2))
 }
 
 const fn parse_playback_status(status: WinPlaybackStatus) -> PlaybackState {
@@ -709,312 +1113,120 @@ mod tests {
         );
     }
 
+    // ticks_to_duration tests
+
     #[test]
-    fn test_player_monitor_new() {
-        let monitor = PlayerMonitor::new();
-        assert_eq!(monitor.players.len(), 0);
+    fn test_ticks_to_duration_negative_is_none() {
+        assert_eq!(ticks_to_duration(-1), None);
+        assert_eq!(ticks_to_duration(i64::MIN), None);
     }
 
     #[test]
-    fn test_player_monitor_first_player_added() {
-        let mut monitor = PlayerMonitor::new();
-        let mut sessions = HashMap::new();
+    fn test_ticks_to_duration_overflow_is_none() {
+        // i64::MAX is used by Windows as a sentinel for unknown/infinite duration (live streams).
+        // (i64::MAX as u64) * 100 overflows u64::MAX, so the result must be None.
+        assert_eq!(ticks_to_duration(i64::MAX), None);
+    }
 
-        let track = create_test_track_for_windows("Song 1");
-        let state = create_test_state_for_windows(
-            track.clone(),
-            PlaybackState::Playing,
-            Some(Duration::from_secs(10)),
-        );
-        sessions.insert("Spotify.exe".to_string(), state);
+    #[test]
+    fn test_ticks_to_duration_zero() {
+        assert_eq!(ticks_to_duration(0), Some(Duration::ZERO));
+    }
 
-        let events = monitor.process_sessions(sessions);
+    #[test]
+    fn test_ticks_to_duration_one_second() {
+        // 1 second = 10_000_000 ticks (100ns units)
+        assert_eq!(ticks_to_duration(10_000_000), Some(Duration::from_secs(1)));
+    }
 
-        // Should get: PlayerAdded, TrackChanged, StateChanged
+    #[test]
+    fn test_ticks_to_duration_fractional() {
+        // 5_000_000 ticks = 500ms
         assert_eq!(
-            events,
-            vec![
-                MediaEvent::PlayerAdded {
-                    player_name: "Spotify.exe".to_string(),
-                },
-                MediaEvent::TrackChanged {
-                    player_name: "Spotify.exe".to_string(),
-                    track,
-                },
-                MediaEvent::StateChanged {
-                    player_name: "Spotify.exe".to_string(),
-                    state: PlaybackState::Playing,
-                }
-            ]
+            ticks_to_duration(5_000_000),
+            Some(Duration::from_millis(500))
         );
     }
 
+    // track_identity_changed tests
+
     #[test]
-    fn test_player_monitor_track_changed() {
-        let mut monitor = PlayerMonitor::new();
-
-        // Initial state
-        let mut initial_sessions = HashMap::new();
-        let track1 = create_test_track_for_windows("Song 1");
-        let initial_state = create_test_state_for_windows(
-            track1,
-            PlaybackState::Playing,
-            Some(Duration::from_secs(10)),
-        );
-        initial_sessions.insert("Spotify.exe".to_string(), initial_state);
-        monitor.process_sessions(initial_sessions);
-
-        // New state with different track
-        let mut new_sessions = HashMap::new();
-        let track2 = create_test_track_for_windows("Song 2");
-        let new_state = create_test_state_for_windows(
-            track2.clone(),
-            PlaybackState::Playing,
-            Some(Duration::from_secs(11)),
-        );
-        new_sessions.insert("Spotify.exe".to_string(), new_state);
-        let events = monitor.process_sessions(new_sessions);
-
-        // Should detect track change
-        assert_eq!(
-            events,
-            vec![MediaEvent::TrackChanged {
-                player_name: "Spotify.exe".to_string(),
-                track: track2
-            }]
-        );
+    fn test_track_identity_changed_no_previous() {
+        let track = create_test_track_for_windows("Song");
+        assert!(track_identity_changed(None, &track));
     }
 
     #[test]
-    fn test_player_monitor_playback_state_changed() {
-        let mut monitor = PlayerMonitor::new();
-
-        // Initial state
-        let mut initial_sessions = HashMap::new();
-        let track = create_test_track_for_windows("Song 1");
-        let initial_state = create_test_state_for_windows(
-            track,
-            PlaybackState::Playing,
-            Some(Duration::from_secs(10)),
-        );
-        initial_sessions.insert("Spotify.exe".to_string(), initial_state);
-        monitor.process_sessions(initial_sessions);
-
-        // New state with different playback state
-        let mut new_sessions = HashMap::new();
-        let track = create_test_track_for_windows("Song 1");
-        let new_state = create_test_state_for_windows(
-            track,
-            PlaybackState::Paused,
-            Some(Duration::from_secs(10)),
-        );
-        new_sessions.insert("Spotify.exe".to_string(), new_state);
-        let events = monitor.process_sessions(new_sessions);
-
-        // Should detect state change
-        assert_eq!(
-            events,
-            vec![MediaEvent::StateChanged {
-                player_name: "Spotify.exe".to_string(),
-                state: PlaybackState::Paused
-            }]
-        );
+    fn test_track_identity_changed_same_identity() {
+        let track = create_test_track_for_windows("Song");
+        let mut updated = track.clone();
+        updated.duration = Some(Duration::from_secs(300)); // duration changed
+        updated.art_url = Some("http://example.com/art.jpg".to_string());
+        assert!(!track_identity_changed(Some(&track), &updated));
     }
 
     #[test]
-    fn test_player_monitor_position_seek() {
-        let mut monitor = PlayerMonitor::new();
-
-        // Initial state
-        let mut initial_sessions = HashMap::new();
-        let track = create_test_track_for_windows("Song 1");
-        let initial_state = create_test_state_for_windows(
-            track.clone(),
-            PlaybackState::Playing,
-            Some(Duration::from_secs(10)),
-        );
-        initial_sessions.insert("Spotify.exe".to_string(), initial_state);
-        monitor.process_sessions(initial_sessions);
-
-        // New state with significant position jump
-        let mut new_sessions = HashMap::new();
-        let new_state = create_test_state_for_windows(
-            track,
-            PlaybackState::Playing,
-            Some(Duration::from_secs(60)),
-        );
-        new_sessions.insert("Spotify.exe".to_string(), new_state);
-        let events = monitor.process_sessions(new_sessions);
-
-        // Should detect position change
-        assert_eq!(
-            events,
-            vec![MediaEvent::PositionChanged {
-                player_name: "Spotify.exe".to_string(),
-                position: Duration::from_secs(60),
-            }]
-        );
+    fn test_track_identity_changed_title_changed() {
+        let a = create_test_track_for_windows("Song A");
+        let b = create_test_track_for_windows("Song B");
+        assert!(track_identity_changed(Some(&a), &b));
     }
 
     #[test]
-    fn test_player_monitor_position_normal_playback() {
-        let mut monitor = PlayerMonitor::new();
-
-        // Initial state
-        let mut initial_sessions = HashMap::new();
-        let track = create_test_track_for_windows("Song 1");
-        let initial_state = create_test_state_for_windows(
-            track.clone(),
-            PlaybackState::Playing,
-            Some(Duration::from_secs(10)),
-        );
-        initial_sessions.insert("Spotify.exe".to_string(), initial_state);
-        monitor.process_sessions(initial_sessions);
-
-        // New state with normal 1 second progression
-        let mut new_sessions = HashMap::new();
-        let new_state = create_test_state_for_windows(
-            track,
-            PlaybackState::Playing,
-            Some(Duration::from_secs(11)),
-        );
-        new_sessions.insert("Spotify.exe".to_string(), new_state);
-        let events = monitor.process_sessions(new_sessions);
-
-        // Should not detect position change for normal playback
-        assert_eq!(events, Vec::<MediaEvent>::new());
+    fn test_track_identity_changed_album_loaded_late_is_not_change() {
+        // Album is late-loading metadata (e.g. a browser populating it after buffering).
+        // A change to album alone must not be treated as a genuine track change.
+        let track = create_test_track_for_windows("Song");
+        let mut updated = track.clone();
+        updated.album = Some("Different Album".to_string());
+        assert!(!track_identity_changed(Some(&track), &updated));
     }
 
     #[test]
-    fn test_player_monitor_player_removed() {
-        let mut monitor = PlayerMonitor::new();
+    fn test_track_identity_changed_artist_changed() {
+        let track = create_test_track_for_windows("Song");
+        let mut updated = track.clone();
+        updated.artist = vec!["Another Artist".to_string()];
+        assert!(track_identity_changed(Some(&track), &updated));
+    }
 
-        // Initial state - player running
-        let mut initial_sessions = HashMap::new();
-        let track = create_test_track_for_windows("Song 1");
-        let initial_state = create_test_state_for_windows(
-            track,
-            PlaybackState::Playing,
-            Some(Duration::from_secs(10)),
-        );
-        initial_sessions.insert("Spotify.exe".to_string(), initial_state);
-        monitor.process_sessions(initial_sessions);
+    // is_seek tests
 
-        // Player stopped - empty sessions
-        let empty_sessions = HashMap::new();
-        let events = monitor.process_sessions(empty_sessions);
-
-        // Should detect player removal
-        assert_eq!(
-            events,
-            vec![MediaEvent::PlayerRemoved {
-                player_name: "Spotify.exe".to_string()
-            }]
-        );
-
-        // State should be cleared
-        assert!(!monitor.players.contains_key("Spotify.exe"));
+    #[test]
+    fn test_is_seek_first_position_always_true() {
+        assert!(is_seek(None, Duration::from_secs(30)));
+        assert!(is_seek(None, Duration::ZERO));
     }
 
     #[test]
-    fn test_player_monitor_multiple_players() {
-        let mut monitor = PlayerMonitor::new();
-        let mut sessions = HashMap::new();
-
-        // Add Spotify
-        let track1 = create_test_track_for_windows("Song 1");
-        let spotify_state = create_test_state_for_windows(
-            track1,
-            PlaybackState::Playing,
-            Some(Duration::from_secs(10)),
-        );
-        sessions.insert("Spotify.exe".to_string(), spotify_state);
-
-        // Add VLC
-        let track2 = create_test_track_for_windows("Song 2");
-        let vlc_state = create_test_state_for_windows(
-            track2,
-            PlaybackState::Playing,
-            Some(Duration::from_secs(5)),
-        );
-        sessions.insert("vlc.exe".to_string(), vlc_state);
-
-        let events = monitor.process_sessions(sessions);
-
-        // Should get events for both players
-        assert!(events.len() >= 6); // 2 players * (Added + Track + State)
-
-        // Both should be tracked
-        assert_eq!(monitor.players.len(), 2);
-        assert!(monitor.players.contains_key("Spotify.exe"));
-        assert!(monitor.players.contains_key("vlc.exe"));
+    fn test_is_seek_normal_playback_not_reported() {
+        // 1-second advance during normal playback must not trigger PositionChanged
+        let last = Some(Duration::from_secs(10));
+        assert!(!is_seek(last, Duration::from_secs(11)));
     }
 
     #[test]
-    fn test_player_monitor_multiple_changes() {
-        let mut monitor = PlayerMonitor::new();
-
-        // Initial state
-        let mut initial_sessions = HashMap::new();
-        let track1 = create_test_track_for_windows("Song 1");
-        let initial_state = create_test_state_for_windows(
-            track1,
-            PlaybackState::Playing,
-            Some(Duration::from_secs(10)),
-        );
-        initial_sessions.insert("Spotify.exe".to_string(), initial_state);
-        monitor.process_sessions(initial_sessions);
-
-        // New state with multiple changes
-        let mut new_sessions = HashMap::new();
-        let track2 = create_test_track_for_windows("Song 2");
-        let new_state = create_test_state_for_windows(
-            track2.clone(),
-            PlaybackState::Paused,
-            Some(Duration::from_secs(60)),
-        );
-        new_sessions.insert("Spotify.exe".to_string(), new_state);
-        let events = monitor.process_sessions(new_sessions);
-
-        // Should detect all changes: track, state, position
-        assert_eq!(
-            events,
-            vec![
-                MediaEvent::TrackChanged {
-                    player_name: "Spotify.exe".to_string(),
-                    track: track2,
-                },
-                MediaEvent::StateChanged {
-                    player_name: "Spotify.exe".to_string(),
-                    state: PlaybackState::Paused,
-                },
-                MediaEvent::PositionChanged {
-                    player_name: "Spotify.exe".to_string(),
-                    position: Duration::from_secs(60),
-                },
-            ]
-        );
+    fn test_is_seek_at_threshold_not_reported() {
+        // Exactly 2 seconds: boundary is exclusive (> 2s), so this is NOT a seek
+        let last = Some(Duration::from_secs(10));
+        assert!(!is_seek(last, Duration::from_secs(12)));
     }
 
     #[test]
-    fn test_player_monitor_no_changes() {
-        let mut monitor = PlayerMonitor::new();
+    fn test_is_seek_exceeds_threshold() {
+        let last = Some(Duration::from_secs(10));
+        assert!(is_seek(last, Duration::from_secs(13)));
+    }
 
-        // Initial state
-        let mut sessions = HashMap::new();
-        let track = create_test_track_for_windows("Song 1");
-        let state = create_test_state_for_windows(
-            track,
-            PlaybackState::Playing,
-            Some(Duration::from_secs(10)),
-        );
-        sessions.insert("Spotify.exe".to_string(), state);
-        monitor.process_sessions(sessions.clone());
+    #[test]
+    fn test_is_seek_backward_jump() {
+        let last = Some(Duration::from_secs(60));
+        assert!(is_seek(last, Duration::from_secs(10)));
+    }
 
-        // Same state again
-        let events = monitor.process_sessions(sessions);
-
-        // Should not generate any events
-        assert_eq!(events, Vec::<MediaEvent>::new());
+    #[test]
+    fn test_is_seek_same_position_not_reported() {
+        let last = Some(Duration::from_secs(30));
+        assert!(!is_seek(last, Duration::from_secs(30)));
     }
 }
