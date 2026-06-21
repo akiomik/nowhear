@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Windows: Migrated from polling-based to fully event-driven architecture using Windows Runtime event handlers (`SessionsChanged`, `MediaPropertiesChanged`, `PlaybackInfoChanged`, `TimelinePropertiesChanged`) for real-time updates with improved performance and reduced resource usage
+- Windows: Deduplicated session enumeration into a shared helper and register session handlers before reading state so each newly discovered session is queried only once, reducing redundant Windows Media Control API calls
 
 ## [0.2.0] - 2026-02-03
 
