@@ -142,7 +142,7 @@ mod tests {
             album: Some("Test Album".to_string()),
             album_artist: vec![],
             track_number: None,
-            duration: Some(Duration::from_secs(180)),
+            duration: Some(Duration::from_mins(3)),
             art_url: None,
         }
     }

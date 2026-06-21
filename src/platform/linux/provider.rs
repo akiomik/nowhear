@@ -657,7 +657,7 @@ mod tests {
             event,
             Some(MediaEvent::PositionChanged {
                 player_name: "Foo".to_string(),
-                position: Duration::from_secs(180)
+                position: Duration::from_mins(3)
             })
         );
 

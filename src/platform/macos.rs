@@ -458,7 +458,7 @@ mod tests {
             album: Some("Test Album".to_string()),
             album_artist: vec![],
             track_number: None,
-            duration: Some(Duration::from_secs(180)),
+            duration: Some(Duration::from_mins(3)),
             art_url: None,
         }
     }
@@ -772,7 +772,7 @@ mod tests {
         let new_state = create_test_player_state_with_track(
             track,
             PlaybackState::Playing,
-            Some(Duration::from_secs(60)), // Jumped 50 seconds
+            Some(Duration::from_mins(1)), // Jumped 50 seconds
             Some(0.8),
         );
         let events = monitor.process_player("Music", Some(new_state));
@@ -782,7 +782,7 @@ mod tests {
             events,
             vec![MediaEvent::PositionChanged {
                 player_name: "Music".to_string(),
-                position: Duration::from_secs(60)
+                position: Duration::from_mins(1)
             }]
         );
     }
@@ -958,7 +958,7 @@ mod tests {
         let new_state = create_test_player_state_with_track(
             track2.clone(),
             PlaybackState::Paused,
-            Some(Duration::from_secs(60)),
+            Some(Duration::from_mins(1)),
             Some(0.5),
         );
         let events = monitor.process_player("Music", Some(new_state));
@@ -977,7 +977,7 @@ mod tests {
                 },
                 MediaEvent::PositionChanged {
                     player_name: "Music".to_string(),
-                    position: Duration::from_secs(60)
+                    position: Duration::from_mins(1)
                 },
                 MediaEvent::VolumeChanged {
                     player_name: "Music".to_string(),
@@ -1364,8 +1364,8 @@ mod tests {
         let spotify_track = spotify_state.into_spotify_track();
 
         // Both should represent the same duration
-        assert_eq!(music_track.duration, Some(Duration::from_secs(180)));
-        assert_eq!(spotify_track.duration, Some(Duration::from_secs(180)));
+        assert_eq!(music_track.duration, Some(Duration::from_mins(3)));
+        assert_eq!(spotify_track.duration, Some(Duration::from_mins(3)));
         assert_eq!(music_track.duration, spotify_track.duration);
     }
 }
