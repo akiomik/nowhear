@@ -2,14 +2,12 @@
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, PoisonError};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future;
 use futures::stream::Stream;
-use tokio::runtime::Handle;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use windows::Foundation::{IStringable, TypedEventHandler};
@@ -19,7 +17,7 @@ use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionMediaProperties as WinMediaProperties,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as WinPlaybackStatus,
 };
-use windows::core::Interface;
+use windows::core::{Interface, Result as WindowsResult, RuntimeType};
 
 use crate::error::{MediaSourceError, Result};
 use crate::source::{EventStream, MediaSource};
@@ -53,22 +51,19 @@ struct SessionWithId {
     session: WinSession,
 }
 
-/// Cached playback state shared across all event handlers for a single session.
-struct SessionState {
-    track: Option<Track>,
-    position: Option<Duration>,
-    playback_state: PlaybackState,
-}
-
-/// Per-session state and event handler tokens for event-driven monitoring.
+/// Per-session WinRT event-handler registration tokens for event-driven monitoring.
 ///
-/// The Drop impl sets `removed = true` first (so in-flight spawned tasks see it) then
-/// deregisters all registered event handlers, preventing new WinRT callbacks after removal.
-/// Tokens are `Option<i64>`: `None` means the handler was never registered (e.g., due
-/// to a transient API error); Drop skips deregistration in that case.
+/// The Drop impl deregisters all registered event handlers so the Windows OS stops firing
+/// callbacks once the session is no longer tracked. Tokens are `Option<i64>`: `None` means the
+/// handler was never registered (e.g., due to a transient API error); Drop skips deregistration
+/// in that case.
+///
+/// Unlike the previous design, this holds no `removed` flag: callbacks no longer touch session
+/// state directly. Each callback only enqueues a [`RawNotification`], and the single monitor loop
+/// ignores notifications whose session id is no longer in its map — so a callback that fires after
+/// removal (but before deregistration completes) is harmless without any cross-thread flag.
 struct SessionEntry {
     session: WinSession,
-    removed: Arc<AtomicBool>,
     token_media_props: Option<i64>,
     token_playback_info: Option<i64>,
     token_timeline: Option<i64>,
@@ -84,8 +79,6 @@ impl SessionEntry {
 
 impl Drop for SessionEntry {
     fn drop(&mut self) {
-        // Signal removed before deregistering so already-queued spawned tasks skip sending.
-        self.removed.store(true, Ordering::Release);
         if let Some(token) = self.token_media_props {
             let _ = self.session.RemoveMediaPropertiesChanged(token);
         }
@@ -228,32 +221,6 @@ impl WindowsMediaControlProvider {
         }
     }
 
-    /// Fetches only the track metadata for a session, without reading playback info.
-    ///
-    /// Used in the `MediaPropertiesChanged` handler so that a transient failure in
-    /// `GetPlaybackInfo` or `GetTimelineProperties` does not silently drop a track-change
-    /// event. `Track.duration` is populated from `EndTime` if available but is not required.
-    async fn get_track_from_session(session: &WinSession) -> Result<Track> {
-        let media_props = session
-            .TryGetMediaPropertiesAsync()
-            .map_err(|e| {
-                MediaSourceError::ParseError(format!("Failed to get media properties: {e}"))
-            })?
-            .await
-            .map_err(|e| {
-                MediaSourceError::ParseError(format!("Failed to await media properties: {e}"))
-            })?;
-
-        let duration = session
-            .GetTimelineProperties()
-            .ok()
-            .and_then(|t| t.EndTime().ok())
-            .filter(|t| t.Duration > 0)
-            .and_then(|t| ticks_to_duration(t.Duration));
-
-        Ok(Self::build_track(&media_props, duration))
-    }
-
     async fn get_session_state(session: &WinSession) -> Result<PlayerState> {
         let media_props = session
             .TryGetMediaPropertiesAsync()
@@ -360,41 +327,23 @@ impl MediaSessionProvider for WindowsMediaControlProvider {
         Err(MediaSourceError::PlayerNotFound(session_id.to_string()))
     }
 
-    // The SessionsChanged/initial-scan tasks deliberately hold the monitor guard across the
-    // session-list snapshot to preserve monotonic ordering, which trips significant_drop_tightening.
-    #[allow(clippy::significant_drop_tightening)]
     fn create_event_stream(&self) -> impl Stream<Item = MediaEvent> + Send + 'static {
         let manager = self.manager.clone();
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        // Raw WinRT notifications funnel through this channel into the single monitor loop.
+        let (raw_tx, raw_rx) = mpsc::unbounded_channel();
 
         tokio::spawn(async move {
-            let monitor = Arc::new(Mutex::new(EventDrivenPlayerMonitor::new(tx.clone())));
-
-            // Register SessionsChanged BEFORE the initial scan so that any session change
-            // during the scan window is queued and processed after the scan completes.
-            // The Mutex on EventDrivenPlayerMonitor serialises the two update_sessions calls.
-            let manager_clone = manager.clone();
-            let monitor_clone = monitor.clone();
-            let handle = Handle::current();
+            // Register SessionsChanged BEFORE the initial scan so any session change during the
+            // scan window is queued as a RawNotification and processed (in order) by the loop
+            // afterwards. The callback is now trivial: it does no I/O and touches no shared state,
+            // it only enqueues. `UnboundedSender::send` is synchronous, lock-free, and needs no
+            // tokio runtime context, so this is safe to call from the arbitrary COM thread WinRT
+            // invokes the callback on.
+            let raw_tx_manager = raw_tx.clone();
             let sessions_changed_guard = manager
                 .SessionsChanged(&TypedEventHandler::new(move |_sender, _args| {
-                    let manager = manager_clone.clone();
-                    let monitor = monitor_clone.clone();
-                    let handle = handle.clone();
-
-                    // Acquire the monitor lock BEFORE snapshotting the session list. Taking the
-                    // snapshot under the lock makes concurrent SessionsChanged tasks observe the
-                    // list in the same order they apply it, so an older snapshot can never
-                    // overwrite a newer one and spuriously emit PlayerRemoved for a live session.
-                    // We always fetch the full list rather than trusting the event args.
-                    handle.spawn(async move {
-                        // The guard is intentionally acquired before the snapshot and held across
-                        // it; tightening the lock scope would reintroduce the stale-snapshot race.
-                        let mut guard = monitor.lock().await;
-                        if let Ok(sessions_with_ids) = Self::get_sessions_from_manager(&manager) {
-                            guard.update_sessions(sessions_with_ids).await;
-                        }
-                    });
+                    let _ = raw_tx_manager.send(RawNotification::SessionsChanged);
                     Ok(())
                 }))
                 .ok()
@@ -403,37 +352,22 @@ impl MediaSessionProvider for WindowsMediaControlProvider {
                     token,
                 });
 
-            // Initial session scan — retry up to 3 times on transient failure.
-            // Without retry, a player already running at startup is invisible until
-            // the next SessionsChanged event fires.
-            // TODO: if all 3 attempts fail and no SessionsChanged fires afterward (i.e. only
-            // one player is running and it never changes), already-running sessions will remain
-            // invisible for the entire stream lifetime. Polling at a long interval as a fallback
-            // would close this gap, but reintroduces the complexity that the event-driven
-            // architecture was designed to eliminate.
-            for attempt in 0..3u32 {
-                // Snapshot under the lock for the same monotonic-ordering reason as the
-                // SessionsChanged handler above.
-                let mut guard = monitor.lock().await;
-                if let Ok(sessions_with_ids) = Self::get_sessions_from_manager(&manager) {
-                    guard.update_sessions(sessions_with_ids).await;
-                    break;
-                }
-                drop(guard);
-                if attempt < 2 {
-                    sleep(Duration::from_millis(500)).await;
-                }
-            }
+            // The monitor owns all mutable state (the session map and the per-session state
+            // cache) and is touched only by this one task. That single-owner design is what lets
+            // the previous Arc<Mutex>, two AtomicBools, and the lock-before-snapshot ordering dance
+            // disappear: event ordering (e.g. PlayerAdded strictly before the first TrackChanged)
+            // now falls out of the loop processing notifications sequentially.
+            let mut monitor = EventDrivenPlayerMonitor::new(manager, raw_tx, event_tx);
+            monitor.run(raw_rx).await;
 
-            // Wait until the consumer drops the stream, then deregister SessionsChanged by
-            // dropping the guard. The guard also deregisters during unwinding if this task panics
-            // or is cancelled before reaching this point, so a callback can never fire into an
-            // orphaned closure.
-            tx.closed().await;
+            // Loop has exited (consumer dropped the stream). Deregister SessionsChanged by
+            // dropping the guard; dropping `monitor` deregisters every per-session handler via
+            // SessionEntry::drop. The guard also deregisters during unwinding if this task panics,
+            // so a callback can never fire into an orphaned closure.
             drop(sessions_changed_guard);
         });
 
-        UnboundedReceiverStream::new(rx)
+        UnboundedReceiverStream::new(event_rx)
     }
 }
 
@@ -471,335 +405,263 @@ pub struct WindowsMediaSource<P: MediaSessionProvider = WindowsMediaControlProvi
     provider: Arc<P>,
 }
 
-/// A newly discovered session whose handlers have been registered but whose authoritative
-/// state has not yet been read and emitted.
-struct PendingSession {
-    id: String,
-    entry: SessionEntry,
-    session_state: Arc<StdMutex<SessionState>>,
-    ready: Arc<AtomicBool>,
+/// A raw notification funnelled from a WinRT callback into the single monitor loop.
+///
+/// Callbacks never read session state or emit `MediaEvent`s themselves; they only enqueue one of
+/// these. The loop does the WinRT reads and the diffing, so all mutable state lives in one place.
+enum RawNotification {
+    /// The manager's session list changed; the loop should re-enumerate.
+    SessionsChanged,
+    /// A tracked session signalled a property change (track, playback, or timeline — they are not
+    /// distinguished). The loop re-reads that session's full state and diffs it against the cache.
+    SessionChanged { id: String },
 }
 
 /// Event-driven player monitor using Windows Runtime event handlers.
+///
+/// This struct is owned and mutated by exactly one task (the loop in [`Self::run`]). WinRT
+/// callbacks communicate with it only by sending [`RawNotification`]s, never by touching its
+/// fields. That single-owner invariant is what removes the need for any locking or atomics.
 struct EventDrivenPlayerMonitor {
-    sessions: HashMap<String, SessionEntry>,
+    manager: SessionManager,
+    /// Handed to each per-session callback so it can enqueue `SessionChanged`.
+    raw_tx: mpsc::UnboundedSender<RawNotification>,
     event_tx: mpsc::UnboundedSender<MediaEvent>,
+    /// Live sessions and their handler-registration tokens (Drop deregisters).
+    sessions: HashMap<String, SessionEntry>,
+    /// Last-emitted state per session, used to diff incoming reads. Plain owned values — no lock,
+    /// because only this task ever touches the map.
+    cache: HashMap<String, PlayerState>,
 }
 
 impl EventDrivenPlayerMonitor {
-    fn new(event_tx: mpsc::UnboundedSender<MediaEvent>) -> Self {
+    fn new(
+        manager: SessionManager,
+        raw_tx: mpsc::UnboundedSender<RawNotification>,
+        event_tx: mpsc::UnboundedSender<MediaEvent>,
+    ) -> Self {
         Self {
-            sessions: HashMap::new(),
+            manager,
+            raw_tx,
             event_tx,
+            sessions: HashMap::new(),
+            cache: HashMap::new(),
         }
     }
 
-    async fn update_sessions(&mut self, sessions_with_ids: Vec<SessionWithId>) {
-        let current_ids: HashSet<_> = sessions_with_ids.iter().map(|s| s.id.clone()).collect();
-        let previous_ids: HashSet<_> = self.sessions.keys().cloned().collect();
+    /// Runs the monitor loop until the consumer drops the event stream.
+    ///
+    /// All notifications are processed strictly sequentially here. This is the heart of the
+    /// design: because there is a single processing point, event ordering is automatic
+    /// (`PlayerAdded` is emitted before the first `SessionChanged` for that id can be processed,
+    /// since the latter sits behind it in the queue) and no field needs synchronisation.
+    async fn run(&mut self, mut raw_rx: mpsc::UnboundedReceiver<RawNotification>) {
+        // The consumer-dropped signal: `closed()` resolves when the receiver end of `event_tx`
+        // (the stream handed to the caller) is dropped, even if no further notification arrives.
+        let event_tx = self.event_tx.clone();
 
-        // Remove stale sessions. SessionEntry::drop sets removed=true then deregisters handlers.
-        for removed_id in previous_ids.difference(&current_ids) {
-            self.sessions.remove(removed_id.as_str());
-            let _ = self.event_tx.send(MediaEvent::PlayerRemoved {
-                player_name: removed_id.clone(),
-            });
-        }
-
-        // Collect sessions not yet tracked, then register their handlers up front. Registration
-        // is synchronous and performs no I/O, so a handler can start observing changes
-        // immediately. The authoritative state is read once per session afterwards (below) in a
-        // single parallel batch: reading after registration means no change can slip through an
-        // unwatched window, and reading only once avoids the redundant second round-trip a
-        // pre-registration read would otherwise require.
-        let new_sessions: Vec<SessionWithId> = sessions_with_ids
-            .into_iter()
-            .filter(|s| !self.sessions.contains_key(&s.id))
-            .collect();
-
-        let mut pending: Vec<PendingSession> = Vec::new();
-        for SessionWithId { id, session } in new_sessions {
-            // `ready` gates handler emissions until PlayerAdded has been sent, so a handler
-            // firing during this setup cannot push TrackChanged/StateChanged/PositionChanged
-            // into the channel ahead of PlayerAdded. The cache starts empty; the authoritative
-            // read below fills it before any event is emitted.
-            let ready = Arc::new(AtomicBool::new(false));
-            let session_state = Arc::new(StdMutex::new(SessionState {
-                track: None,
-                position: None,
-                playback_state: PlaybackState::Stopped,
-            }));
-
-            let entry = self.register_event_handlers(
-                session,
-                &id,
-                &session_state,
-                Arc::new(AtomicBool::new(false)),
-                &ready,
-            );
-
-            // Keep only sessions whose three handlers all registered. A partial registration is
-            // dropped here (SessionEntry::drop deregisters any successful handlers), so the next
-            // SessionsChanged event retries.
-            if entry.is_fully_registered() {
-                pending.push(PendingSession {
-                    id,
-                    entry,
-                    session_state,
-                    ready,
-                });
+        // Initial session scan — retry up to 3 times on transient enumeration failure. Without
+        // retry, a player already running at startup is invisible until the next SessionsChanged.
+        // TODO: if all 3 attempts fail and no SessionsChanged fires afterward (only one player
+        // running and never changing), already-running sessions stay invisible for the stream's
+        // lifetime. A long-interval polling fallback would close this gap but reintroduces the
+        // polling complexity the event-driven design exists to avoid.
+        for attempt in 0..3u32 {
+            if self.handle_sessions_changed().await {
+                break;
+            }
+            if attempt < 2 {
+                sleep(Duration::from_millis(500)).await;
             }
         }
 
-        // Read every registered session's state in parallel so a slow or hung player does not
-        // block discovery of the others.
-        let states = future::join_all(
-            pending
-                .iter()
-                .map(|p| WindowsMediaControlProvider::get_session_state_bounded(&p.entry.session)),
-        )
-        .await;
+        loop {
+            tokio::select! {
+                maybe = raw_rx.recv() => match maybe {
+                    Some(RawNotification::SessionsChanged) => {
+                        self.handle_sessions_changed().await;
+                    }
+                    Some(RawNotification::SessionChanged { id }) => {
+                        self.handle_session_changed(&id).await;
+                    }
+                    None => break,
+                },
+                () = event_tx.closed() => break,
+            }
+        }
+    }
 
-        for (p, state_result) in pending.into_iter().zip(states) {
+    /// Re-enumerates the manager's sessions, reconciling them against the tracked set.
+    ///
+    /// Returns `true` if enumeration succeeded (used by the initial-scan retry), `false` on a
+    /// transient failure that a later notification will retry.
+    async fn handle_sessions_changed(&mut self) -> bool {
+        let Ok(sessions_with_ids) =
+            WindowsMediaControlProvider::get_sessions_from_manager(&self.manager)
+        else {
+            return false;
+        };
+
+        let current_ids: HashSet<&str> = sessions_with_ids.iter().map(|s| s.id.as_str()).collect();
+
+        // Remove sessions that disappeared. SessionEntry::drop deregisters their handlers.
+        let removed_ids: Vec<String> = self
+            .sessions
+            .keys()
+            .filter(|id| !current_ids.contains(id.as_str()))
+            .cloned()
+            .collect();
+        for id in removed_ids {
+            self.sessions.remove(&id);
+            self.cache.remove(&id);
+            let _ = self
+                .event_tx
+                .send(MediaEvent::PlayerRemoved { player_name: id });
+        }
+
+        // Register handlers for newly-discovered sessions up front. Registration is synchronous
+        // and does no I/O, so a handler starts observing immediately; the authoritative state is
+        // read once afterwards (below). Reading after registration means no change can slip
+        // through an unwatched window — any change in between simply queues a SessionChanged that
+        // the loop processes after this scan, re-reading idempotently.
+        let mut pending: Vec<(String, WinSession)> = Vec::new();
+        for SessionWithId { id, session } in sessions_with_ids {
+            if self.sessions.contains_key(&id) {
+                continue;
+            }
+            let entry = self.register_session_handlers(session.clone(), &id);
+            // Keep only sessions whose three handlers all registered. A partial registration is
+            // dropped here (deregistering any successful handlers), so a later scan retries.
+            if entry.is_fully_registered() {
+                self.sessions.insert(id.clone(), entry);
+                pending.push((id, session));
+            }
+        }
+
+        // Read every new session's initial state in parallel. This is the one place reads are
+        // batched: a fresh SessionsChanged can surface many players at once, and a slow or hung
+        // one must not delay discovering the others. (Steady-state single-session reads in
+        // `handle_session_changed` are not batched — see the trade-off note there.)
+        let states =
+            future::join_all(pending.iter().map(|(_, session)| {
+                WindowsMediaControlProvider::get_session_state_bounded(session)
+            }))
+            .await;
+
+        for ((id, _), state_result) in pending.into_iter().zip(states) {
             let Ok(state) = state_result else {
-                // Read failed or timed out: drop the entry (which deregisters the handlers) and
-                // skip, so the next SessionsChanged event retries.
-                // FIXME: if no SessionsChanged fires after this (the player is already running
-                // and stable), this session is permanently untracked for the lifetime of the
-                // stream. A background retry task per failed session would fix this, but adds
-                // significant complexity.
+                // Read failed or timed out: stop tracking (Drop deregisters handlers) so a later
+                // SessionsChanged retries.
+                // FIXME: if no SessionsChanged fires after this (player already running and
+                // stable), this session stays untracked for the stream's lifetime. A per-session
+                // background retry would fix it but adds significant complexity.
+                self.sessions.remove(&id);
                 continue;
             };
 
-            {
-                let mut cache = p
-                    .session_state
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                cache.track = Some(state.track.clone());
-                cache.position = state.position;
-                cache.playback_state = state.playback_state;
-            }
+            // Seed the cache before emitting so the next SessionChanged diffs against this state.
+            self.cache.insert(id.clone(), state.clone());
 
+            // Initial events for a freshly-discovered session: always PlayerAdded, then the
+            // current track and state. Emitted here (not via the differ) because discovery always
+            // reports the baseline regardless of prior cache contents.
             let _ = self.event_tx.send(MediaEvent::PlayerAdded {
-                player_name: p.id.clone(),
+                player_name: id.clone(),
             });
             let _ = self.event_tx.send(MediaEvent::TrackChanged {
-                player_name: p.id.clone(),
+                player_name: id.clone(),
                 track: state.track,
             });
             let _ = self.event_tx.send(MediaEvent::StateChanged {
-                player_name: p.id.clone(),
+                player_name: id,
                 state: state.playback_state,
             });
-            // PlayerAdded is now queued ahead of any handler event; allow handlers to emit.
-            p.ready.store(true, Ordering::Release);
-            self.sessions.insert(p.id, p.entry);
+        }
+
+        true
+    }
+
+    /// Re-reads one session's full state and emits whatever changed relative to the cache.
+    ///
+    /// # Trade-off (single-owner loop vs. read latency)
+    ///
+    /// This read runs inline in the monitor loop, so a player whose WinRT read is slow stalls
+    /// processing of other sessions' notifications for up to [`SESSION_STATE_TIMEOUT`]. That bound
+    /// is the deliberate cap. We accept it because:
+    /// - media notifications are low-frequency, so serial reads rarely queue up;
+    /// - keeping the read in the loop is exactly what lets the monitor own its state without locks.
+    ///
+    /// If steady-state read latency ever becomes a problem, the escape hatch is to spawn the read
+    /// as a task and feed its result back as a third `RawNotification` variant (e.g.
+    /// `StateRead { id, state }`), turning this into a fully non-blocking actor. That was left out
+    /// on purpose: it adds a message type and reorders nothing observable today.
+    async fn handle_session_changed(&mut self, id: &str) {
+        // Ignore notifications for sessions we no longer track (removed, or registration failed).
+        // This is why no `removed` flag is needed: a late callback just looks up a missing id.
+        let Some(entry) = self.sessions.get(id) else {
+            return;
+        };
+
+        let Ok(state) =
+            WindowsMediaControlProvider::get_session_state_bounded(&entry.session).await
+        else {
+            // Read failed or timed out: skip; a later notification retries.
+            return;
+        };
+
+        let events = diff_player_state(id, self.cache.get(id), &state);
+        // Always refresh the cache, even when nothing is emitted, so late-loading metadata
+        // (duration, art_url) is retained without surfacing a spurious TrackChanged.
+        self.cache.insert(id.to_string(), state);
+
+        for event in events {
+            if self.event_tx.send(event).is_err() {
+                return;
+            }
         }
     }
 
-    fn register_event_handlers(
-        &self,
-        session: WinSession,
-        session_id: &str,
-        session_state: &Arc<StdMutex<SessionState>>,
-        removed: Arc<AtomicBool>,
-        ready: &Arc<AtomicBool>,
-    ) -> SessionEntry {
-        let tx = &self.event_tx;
-
-        let token_media_props = Self::register_media_properties_changed(
-            &session,
-            tx,
-            session_id,
-            Arc::clone(session_state),
-            Arc::clone(&removed),
-            Arc::clone(ready),
-        );
-        let token_playback_info = Self::register_playback_info_changed(
-            &session,
-            tx,
-            session_id,
-            Arc::clone(session_state),
-            Arc::clone(&removed),
-            Arc::clone(ready),
-        );
-        let token_timeline = Self::register_timeline_properties_changed(
-            &session,
-            tx,
-            session_id,
-            Arc::clone(session_state),
-            Arc::clone(&removed),
-            Arc::clone(ready),
-        );
+    /// Registers all three per-session WinRT change handlers.
+    ///
+    /// Every handler body is now identical and trivial: enqueue `SessionChanged { id }` and
+    /// return. They do no I/O, hold no locks, and capture no session state — the loop does the
+    /// reading and diffing. The three WinRT events differ only in name, so a tiny helper builds
+    /// each registration.
+    fn register_session_handlers(&self, session: WinSession, id: &str) -> SessionEntry {
+        let token_media_props = Self::register_changed(id, &self.raw_tx, |handler| {
+            session.MediaPropertiesChanged(handler)
+        });
+        let token_playback_info = Self::register_changed(id, &self.raw_tx, |handler| {
+            session.PlaybackInfoChanged(handler)
+        });
+        let token_timeline = Self::register_changed(id, &self.raw_tx, |handler| {
+            session.TimelinePropertiesChanged(handler)
+        });
 
         SessionEntry {
             session,
-            removed,
             token_media_props,
             token_playback_info,
             token_timeline,
         }
     }
 
-    fn register_media_properties_changed(
-        session: &WinSession,
-        tx: &mpsc::UnboundedSender<MediaEvent>,
-        player_name: &str,
-        session_state: Arc<StdMutex<SessionState>>,
-        removed: Arc<AtomicBool>,
-        ready: Arc<AtomicBool>,
+    /// Builds a `SessionChanged`-enqueuing handler and registers it via `register`.
+    ///
+    /// Generic over the WinRT event-args type `A` so the same trivial closure serves all three
+    /// change events. Returns the registration token, or `None` on a transient registration error.
+    fn register_changed<A: RuntimeType + 'static>(
+        id: &str,
+        raw_tx: &mpsc::UnboundedSender<RawNotification>,
+        register: impl FnOnce(&TypedEventHandler<WinSession, A>) -> WindowsResult<i64>,
     ) -> Option<i64> {
-        let handle = Handle::current();
-        let tx = tx.clone();
-        let player_name = player_name.to_string();
-        let session_clone = session.clone();
-
-        session
-            .MediaPropertiesChanged(&TypedEventHandler::new(move |_sender, _args| {
-                let handle = handle.clone();
-                let tx = tx.clone();
-                let player_name = player_name.clone();
-                let session = session_clone.clone();
-                let session_state = Arc::clone(&session_state);
-                let removed = Arc::clone(&removed);
-                let ready = Arc::clone(&ready);
-
-                handle.spawn(async move {
-                    if let Ok(track) =
-                        WindowsMediaControlProvider::get_track_from_session(&session).await
-                    {
-                        let mut state =
-                            session_state.lock().unwrap_or_else(PoisonError::into_inner);
-                        if track_identity_changed(state.track.as_ref(), &track) {
-                            state.track = Some(track.clone());
-                            // Reset position atomically with the track update so that
-                            // any concurrent TimelinePropertiesChanged task that acquires
-                            // this lock after us sees position=None only after TrackChanged
-                            // is already in the channel (sent below while still holding the lock).
-                            state.position = None;
-                            // `ready` keeps emissions ordered after PlayerAdded for a new session.
-                            if ready.load(Ordering::Acquire) && !removed.load(Ordering::Acquire) {
-                                let _ = tx.send(MediaEvent::TrackChanged { player_name, track });
-                            }
-                        } else {
-                            // Metadata-only change (e.g. duration or art_url loaded late):
-                            // update the cache without emitting TrackChanged.
-                            state.track = Some(track);
-                        }
-                        // Lock releases here; position=None is now visible to timeline handler.
-                    }
-                });
-                Ok(())
-            }))
-            .ok()
-    }
-
-    fn register_playback_info_changed(
-        session: &WinSession,
-        tx: &mpsc::UnboundedSender<MediaEvent>,
-        player_name: &str,
-        session_state: Arc<StdMutex<SessionState>>,
-        removed: Arc<AtomicBool>,
-        ready: Arc<AtomicBool>,
-    ) -> Option<i64> {
-        let handle = Handle::current();
-        let tx = tx.clone();
-        let player_name = player_name.to_string();
-        let session_clone = session.clone();
-
-        session
-            .PlaybackInfoChanged(&TypedEventHandler::new(move |_sender, _args| {
-                let handle = handle.clone();
-                let tx = tx.clone();
-                let player_name = player_name.clone();
-                let session = session_clone.clone();
-                let session_state = Arc::clone(&session_state);
-                let removed = Arc::clone(&removed);
-                let ready = Arc::clone(&ready);
-
-                handle.spawn(async move {
-                    if let Ok(playback_info) = session.GetPlaybackInfo()
-                        && let Ok(status) = playback_info.PlaybackStatus()
-                    {
-                        let new_state = parse_playback_status(status);
-                        let mut state =
-                            session_state.lock().unwrap_or_else(PoisonError::into_inner);
-                        if state.playback_state != new_state {
-                            state.playback_state = new_state;
-                            drop(state);
-                            // `ready` keeps emissions ordered after PlayerAdded for a new session.
-                            if ready.load(Ordering::Acquire) && !removed.load(Ordering::Acquire) {
-                                let _ = tx.send(MediaEvent::StateChanged {
-                                    player_name,
-                                    state: new_state,
-                                });
-                            }
-                        }
-                    }
-                });
-                Ok(())
-            }))
-            .ok()
-    }
-
-    fn register_timeline_properties_changed(
-        session: &WinSession,
-        tx: &mpsc::UnboundedSender<MediaEvent>,
-        player_name: &str,
-        session_state: Arc<StdMutex<SessionState>>,
-        removed: Arc<AtomicBool>,
-        ready: Arc<AtomicBool>,
-    ) -> Option<i64> {
-        let handle = Handle::current();
-        let tx = tx.clone();
-        let player_name = player_name.to_string();
-        let session_clone = session.clone();
-
-        session
-            .TimelinePropertiesChanged(&TypedEventHandler::new(move |_sender, _args| {
-                let handle = handle.clone();
-                let tx = tx.clone();
-                let player_name = player_name.clone();
-                let session = session_clone.clone();
-                let session_state = Arc::clone(&session_state);
-                let removed = Arc::clone(&removed);
-                let ready = Arc::clone(&ready);
-
-                handle.spawn(async move {
-                    let Some(position) = session
-                        .GetTimelineProperties()
-                        .ok()
-                        .and_then(|t| t.Position().ok())
-                        .and_then(|t| ticks_to_duration(t.Duration))
-                    else {
-                        return;
-                    };
-
-                    let should_emit = {
-                        let mut state =
-                            session_state.lock().unwrap_or_else(PoisonError::into_inner);
-                        // `ready` keeps emissions ordered after PlayerAdded for a new session.
-                        if is_seek(state.position, position)
-                            && ready.load(Ordering::Acquire)
-                            && !removed.load(Ordering::Acquire)
-                        {
-                            state.position = Some(position);
-                            true
-                        } else {
-                            false
-                        }
-                    };
-                    if should_emit {
-                        let _ = tx.send(MediaEvent::PositionChanged {
-                            player_name,
-                            position,
-                        });
-                    }
-                });
-                Ok(())
-            }))
-            .ok()
+        let raw_tx = raw_tx.clone();
+        let id = id.to_string();
+        register(&TypedEventHandler::new(move |_sender, _args| {
+            let _ = raw_tx.send(RawNotification::SessionChanged { id: id.clone() });
+            Ok(())
+        }))
+        .ok()
     }
 }
 
@@ -870,6 +732,57 @@ fn track_identity_changed(old: Option<&Track>, new: &Track) -> bool {
 /// emitted.
 fn is_seek(last_position: Option<Duration>, current_position: Duration) -> bool {
     last_position.is_none_or(|last| current_position.abs_diff(last) > Duration::from_secs(2))
+}
+
+/// Diffs a freshly-read [`PlayerState`] against the cached one and returns the events to emit.
+///
+/// This is the single, platform-agnostic place where Windows' "something changed, re-read
+/// everything" notifications are turned into discrete `MediaEvent`s. Collapsing the three former
+/// per-handler diff paths into one pure function is what let the three WinRT handlers become
+/// identical. Events are ordered `TrackChanged`, `StateChanged`, `PositionChanged`.
+///
+/// `old` is `None` only when no prior state is cached (the differ is not used for the very first
+/// emission — see `handle_sessions_changed`, which emits the baseline directly).
+fn diff_player_state(
+    player_name: &str,
+    old: Option<&PlayerState>,
+    new: &PlayerState,
+) -> Vec<MediaEvent> {
+    let mut events = Vec::new();
+
+    let track_changed = track_identity_changed(old.map(|o| &o.track), &new.track);
+    if track_changed {
+        events.push(MediaEvent::TrackChanged {
+            player_name: player_name.to_string(),
+            track: new.track.clone(),
+        });
+    }
+
+    if old.map(|o| o.playback_state) != Some(new.playback_state) {
+        events.push(MediaEvent::StateChanged {
+            player_name: player_name.to_string(),
+            state: new.playback_state,
+        });
+    }
+
+    if let Some(position) = new.position {
+        // On a genuine track change, treat the position as fresh so the new track's first
+        // position is reported. This mirrors the pre-refactor behaviour where a track change
+        // reset the cached position to `None` before the timeline handler ran.
+        let last = if track_changed {
+            None
+        } else {
+            old.and_then(|o| o.position)
+        };
+        if is_seek(last, position) {
+            events.push(MediaEvent::PositionChanged {
+                player_name: player_name.to_string(),
+                position,
+            });
+        }
+    }
+
+    events
 }
 
 const fn parse_playback_status(status: WinPlaybackStatus) -> PlaybackState {
@@ -1240,5 +1153,116 @@ mod tests {
     fn test_is_seek_same_position_not_reported() {
         let last = Some(Duration::from_secs(30));
         assert!(!is_seek(last, Duration::from_secs(30)));
+    }
+
+    // diff_player_state tests
+
+    #[test]
+    fn test_diff_player_state_no_change_emits_nothing() {
+        let state = create_test_state_for_windows(
+            create_test_track_for_windows("Song"),
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+        );
+        // Same position so is_seek is false; nothing should be emitted.
+        let events = diff_player_state("p", Some(&state), &state);
+        assert_eq!(events, Vec::<MediaEvent>::new());
+    }
+
+    #[test]
+    fn test_diff_player_state_track_change_emits_track_and_position() {
+        let old = create_test_state_for_windows(
+            create_test_track_for_windows("Old"),
+            PlaybackState::Playing,
+            Some(Duration::from_secs(120)),
+        );
+        let new = create_test_state_for_windows(
+            create_test_track_for_windows("New"),
+            PlaybackState::Playing,
+            Some(Duration::from_secs(0)),
+        );
+        let events = diff_player_state("p", Some(&old), &new);
+        // Track changed, state unchanged, and the new track's position is reported as fresh
+        // (track change resets the seek baseline).
+        assert_eq!(
+            events,
+            vec![
+                MediaEvent::TrackChanged {
+                    player_name: "p".to_string(),
+                    track: new.track,
+                },
+                MediaEvent::PositionChanged {
+                    player_name: "p".to_string(),
+                    position: Duration::from_secs(0),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_diff_player_state_metadata_only_change_not_emitted() {
+        let old = create_test_state_for_windows(
+            create_test_track_for_windows("Song"),
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+        );
+        let mut new = old.clone();
+        // Late-loading metadata only: album/art change, identity (title+artist) stays.
+        new.track.album = Some("Different Album".to_string());
+        new.track.art_url = Some("http://example.com/a.jpg".to_string());
+        let events = diff_player_state("p", Some(&old), &new);
+        assert_eq!(events, Vec::<MediaEvent>::new());
+    }
+
+    #[test]
+    fn test_diff_player_state_playback_state_change_only() {
+        let old = create_test_state_for_windows(
+            create_test_track_for_windows("Song"),
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+        );
+        let mut new = old.clone();
+        new.playback_state = PlaybackState::Paused;
+        let events = diff_player_state("p", Some(&old), &new);
+        assert_eq!(
+            events,
+            vec![MediaEvent::StateChanged {
+                player_name: "p".to_string(),
+                state: PlaybackState::Paused,
+            }]
+        );
+    }
+
+    #[test]
+    fn test_diff_player_state_seek_within_same_track() {
+        let old = create_test_state_for_windows(
+            create_test_track_for_windows("Song"),
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+        );
+        let mut new = old.clone();
+        new.position = Some(Duration::from_secs(60));
+        let events = diff_player_state("p", Some(&old), &new);
+        assert_eq!(
+            events,
+            vec![MediaEvent::PositionChanged {
+                player_name: "p".to_string(),
+                position: Duration::from_secs(60),
+            }]
+        );
+    }
+
+    #[test]
+    fn test_diff_player_state_normal_progression_not_emitted() {
+        let old = create_test_state_for_windows(
+            create_test_track_for_windows("Song"),
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+        );
+        let mut new = old.clone();
+        // 1-second advance during normal playback is not a seek.
+        new.position = Some(Duration::from_secs(11));
+        let events = diff_player_state("p", Some(&old), &new);
+        assert_eq!(events, Vec::<MediaEvent>::new());
     }
 }
