@@ -82,8 +82,9 @@ impl<P: MediaSessionProvider + 'static> MediaSource for WindowsMediaSource<P> {
 
 #[cfg(test)]
 mod tests {
-    use super::provider::PlayerState;
     use super::*;
+
+    use crate::platform::state::PlayerState;
 
     use std::collections::HashMap;
     use std::time::Duration;

@@ -19,3 +19,11 @@ pub mod macos;
 
 #[cfg(target_os = "windows")]
 pub mod windows;
+
+/// Platform-agnostic player-state snapshot and event diffing.
+///
+/// Consumed by the backends that read full state snapshots and diff successive reads (Windows and
+/// macOS). The `cfg` lists those backends; Linux is absent because MPRIS delivers explicit deltas
+/// and never diffs snapshots. The module itself has no platform dependencies.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+mod state;

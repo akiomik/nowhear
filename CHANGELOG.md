@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Windows: Migrated from polling-based to fully event-driven architecture using Windows Runtime event handlers (`SessionsChanged`, `MediaPropertiesChanged`, `PlaybackInfoChanged`, `TimelinePropertiesChanged`) for real-time updates with improved performance and reduced resource usage
 - Windows: Deduplicated session enumeration into a shared helper and register session handlers before reading state so each newly discovered session is queried only once, reducing redundant Windows Media Control API calls
+- Windows/macOS: Unified state-change detection into a single shared `diff_player_state` helper, so both backends report events identically
+- **BREAKING**: macOS: `TrackChanged` is now emitted only when the track title or artist changes. Metadata-only updates (album, artwork, duration, track number) no longer emit `TrackChanged`, matching the Windows backend
+- **BREAKING**: macOS: A track change now also emits a `PositionChanged` for the new track's position (the seek baseline resets on track change), instead of suppressing it when the new position happens to be within 2 seconds of the previous track's position
 
 ## [0.2.0] - 2026-02-03
 
