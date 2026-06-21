@@ -255,12 +255,13 @@ impl MprisProvider {
             let sender = msg.header().sender().cloned().ok_or_else(|| {
                 MediaSourceError::InternalError("Failed to get sender".to_string())
             })?;
-            let player_name = player_name_cache
-                .get(&sender.into_owned())
-                .cloned()
-                .ok_or_else(|| {
-                    MediaSourceError::InternalError("Failed to get player name".to_string())
-                })?;
+            // A signal can arrive before the `NameOwnerChanged` that registers the player in the
+            // cache (the `select!` in `create_event_stream` picks a ready branch non-deterministically),
+            // or just after the player was removed and its cache entry dropped. Such a signal cannot
+            // be attributed to a player, so skip it rather than terminating the whole event stream.
+            let Some(player_name) = player_name_cache.get(&sender.into_owned()).cloned() else {
+                return Ok(events);
+            };
 
             let status_key = Value::new(Self::PLAYBACK_STATUS_PROPERTY);
             if let Some(Value::Str(status)) = changed_props.get(&status_key)? {
@@ -329,12 +330,12 @@ impl MprisProvider {
             msg.header().sender().cloned().ok_or_else(|| {
                 MediaSourceError::InternalError("Failed to get sender".to_string())
             })?;
-        let player_name = player_name_cache
-            .get(&sender.into_owned())
-            .cloned()
-            .ok_or_else(|| {
-                MediaSourceError::InternalError("Failed to get player name".to_string())
-            })?;
+        // As in `handle_property_changed_message`, a `Seeked` signal can race ahead of the
+        // `NameOwnerChanged` that caches the player, or trail its removal. Skip the unattributable
+        // signal instead of tearing down the event stream.
+        let Some(player_name) = player_name_cache.get(&sender.into_owned()).cloned() else {
+            return Ok(None);
+        };
 
         let position_us: i64 = msg
             .body()
@@ -534,6 +535,35 @@ mod tests {
     }
 
     #[test]
+    fn test_handle_property_changed_message_unknown_player() -> Result<(), Box<dyn Error>> {
+        // The sender is not in the cache (e.g. a signal racing ahead of NameOwnerChanged, or
+        // trailing a removal). It must be skipped, not surfaced as an error that kills the stream.
+        let player_name_cache = HashMap::new();
+        let mut changed_properties: HashMap<&str, Value> = HashMap::new();
+        changed_properties.insert(
+            MprisProvider::PLAYBACK_STATUS_PROPERTY,
+            Value::new("Playing"),
+        );
+        let msg = Message::signal(
+            MprisProvider::OBJECT_PATH,
+            MprisProvider::PROPERTIES_INTERFACE,
+            MprisProvider::PROPERTIES_CHANGED_SIGNAL,
+        )?
+        .sender(":unknown.player")?
+        .build(&(
+            MprisProvider::PLAYER_INTERFACE,
+            changed_properties,
+            Vec::<&str>::new(),
+        ))?;
+
+        let events = MprisProvider::handle_property_changed_message(&msg, &player_name_cache)?;
+
+        assert_eq!(events, vec![]);
+
+        Ok(())
+    }
+
+    #[test]
     fn test_handle_name_owner_changed_message_added() -> Result<(), Box<dyn Error>> {
         let mut player_name_cache = HashMap::new();
         let msg = Message::signal(
@@ -609,6 +639,26 @@ mod tests {
                 position: Duration::from_secs(180)
             })
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_handle_seeked_message_unknown_player() -> Result<(), Box<dyn Error>> {
+        // The sender is not in the cache; the signal must be skipped rather than terminating the
+        // event stream.
+        let player_name_cache = HashMap::new();
+        let msg = Message::signal(
+            MprisProvider::OBJECT_PATH,
+            MprisProvider::PLAYER_INTERFACE,
+            MprisProvider::SEEKED_SIGNAL,
+        )?
+        .sender(":unknown.player")?
+        .build(&(180_000_000_i64))?;
+
+        let event = MprisProvider::handle_seeked_message(&msg, &player_name_cache)?;
+
+        assert_eq!(event, None);
 
         Ok(())
     }

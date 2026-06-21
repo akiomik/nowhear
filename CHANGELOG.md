@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING**: macOS: `TrackChanged` is now emitted only when the track title or artist changes. Metadata-only updates (album, artwork, duration, track number) no longer emit `TrackChanged`, matching the Windows backend
 - **BREAKING**: macOS: A track change now also emits a `PositionChanged` for the new track's position (the seek baseline resets on track change), instead of suppressing it when the new position happens to be within 2 seconds of the previous track's position
 
+### Fixed
+
+- Linux: A `PropertiesChanged` or `Seeked` signal from a player missing from the internal name cache no longer terminates the entire event stream. Such signals can race ahead of the `NameOwnerChanged` that populates the cache, or trail a player's removal; they are now skipped instead of propagating a fatal error
+
 ## [0.2.0] - 2026-02-03
 
 ### Changed
