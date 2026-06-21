@@ -64,6 +64,7 @@ impl MprisProvider {
     /// Returns an error if the D-Bus session connection cannot be established.
     pub async fn new() -> Result<Self> {
         let connection = Connection::session().await?;
+        debug!("connected to D-Bus session bus");
 
         Ok(Self {
             connection: Arc::new(connection),
@@ -255,11 +256,13 @@ impl MprisProvider {
             let sender = msg.header().sender().cloned().ok_or_else(|| {
                 MediaSourceError::InternalError("Failed to get sender".to_string())
             })?;
+            let sender = sender.into_owned();
             // A signal can arrive before the `NameOwnerChanged` that registers the player in the
             // cache (the `select!` in `create_event_stream` picks a ready branch non-deterministically),
             // or just after the player was removed and its cache entry dropped. Such a signal cannot
             // be attributed to a player, so skip it rather than terminating the whole event stream.
-            let Some(player_name) = player_name_cache.get(&sender.into_owned()).cloned() else {
+            let Some(player_name) = player_name_cache.get(&sender).cloned() else {
+                debug!("PropertiesChanged signal from untracked sender, skipping");
                 return Ok(events);
             };
 
@@ -330,10 +333,12 @@ impl MprisProvider {
             msg.header().sender().cloned().ok_or_else(|| {
                 MediaSourceError::InternalError("Failed to get sender".to_string())
             })?;
+        let sender = sender.into_owned();
         // As in `handle_property_changed_message`, a `Seeked` signal can race ahead of the
         // `NameOwnerChanged` that caches the player, or trail its removal. Skip the unattributable
         // signal instead of tearing down the event stream.
-        let Some(player_name) = player_name_cache.get(&sender.into_owned()).cloned() else {
+        let Some(player_name) = player_name_cache.get(&sender).cloned() else {
+            debug!("Seeked signal from untracked sender, skipping");
             return Ok(None);
         };
 
@@ -403,6 +408,7 @@ impl PlayerDiscoveryProvider for MprisProvider {
                 Self::name_owner_changed_stream(&connection).await?;
             let mut seeked_stream = Self::seeked_stream(&connection).await?;
             let mut player_name_cache = Self::initialize_player_name_cache(&connection).await?;
+            debug!("starting D-Bus event stream task");
 
             loop {
                 tokio::select! {
@@ -411,41 +417,64 @@ impl PlayerDiscoveryProvider for MprisProvider {
                     // next signal happens to arrive and a send fails, so a paused or idle player
                     // would keep this task — and its D-Bus match rules and connection handle —
                     // alive indefinitely.
-                    () = tx.closed() => break,
+                    () = tx.closed() => {
+                        debug!("D-Bus event stream task shutting down: consumer dropped");
+                        break;
+                    }
                     Some(msg) = property_changed_stream.next() => {
                         // A single undecodable message (stream-level error) or one that fails to
                         // parse must not tear down the whole stream; skip it and keep monitoring.
                         // Each poll advances past the offending message, so this cannot spin.
-                        if let Ok(msg) = msg
-                            && let Ok(events) = Self::handle_property_changed_message(&msg, &player_name_cache)
-                        {
-                            for event in events {
-                                if tx.send(event).is_err() {
-                                    // Receiver dropped mid-batch: tear down the whole task. A plain
-                                    // `break` here would only exit the `for`, leaving the outer loop
-                                    // spinning until another signal arrived.
-                                    return Ok(());
+                        if let Ok(msg) = msg {
+                            let events = Self::handle_property_changed_message(&msg, &player_name_cache);
+                            #[cfg(feature = "tracing")]
+                            if let Err(ref e) = events {
+                                tracing::debug!(error = %e, "failed to parse PropertiesChanged message, skipping");
+                            }
+                            if let Ok(events) = events {
+                                for event in events {
+                                    if tx.send(event).is_err() {
+                                        // Receiver dropped mid-batch: tear down the whole task. A plain
+                                        // `break` here would only exit the `for`, leaving the outer loop
+                                        // spinning until another signal arrived.
+                                        return Ok(());
+                                    }
                                 }
                             }
                         }
                     }
                     Some(msg) = name_owner_changed_stream.next() => {
-                        if let Ok(msg) = msg
-                            && let Ok(Some(event)) = Self::handle_name_owner_changed_message(&msg, &mut player_name_cache)
-                            && tx.send(event).is_err()
-                        {
-                            break;
+                        if let Ok(msg) = msg {
+                            let event = Self::handle_name_owner_changed_message(&msg, &mut player_name_cache);
+                            #[cfg(feature = "tracing")]
+                            if let Err(ref e) = event {
+                                tracing::debug!(error = %e, "failed to parse NameOwnerChanged message, skipping");
+                            }
+                            if let Ok(Some(event)) = event
+                                && tx.send(event).is_err()
+                            {
+                                break;
+                            }
                         }
                     }
                     Some(msg) = seeked_stream.next() => {
-                        if let Ok(msg) = msg
-                            && let Ok(Some(event)) = Self::handle_seeked_message(&msg, &player_name_cache)
-                            && tx.send(event).is_err()
-                        {
-                            break;
+                        if let Ok(msg) = msg {
+                            let event = Self::handle_seeked_message(&msg, &player_name_cache);
+                            #[cfg(feature = "tracing")]
+                            if let Err(ref e) = event {
+                                tracing::debug!(error = %e, "failed to parse Seeked message, skipping");
+                            }
+                            if let Ok(Some(event)) = event
+                                && tx.send(event).is_err()
+                            {
+                                break;
+                            }
                         }
                     }
-                    else => break,
+                    else => {
+                        debug!("D-Bus event stream task shutting down: all signal streams closed");
+                        break;
+                    }
                 }
             }
 

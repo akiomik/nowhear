@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Optional `tracing` feature: enables diagnostic instrumentation via the `tracing` crate. Emits `debug`- and `warn`-level events for background task lifecycle, silently skipped errors, and platform-specific failures (D-Bus parse errors on Linux, AppleScript errors on macOS, Windows Media Control session errors on Windows)
+
 ### Changed
 
 - Bump rust version to 1.96.0

@@ -200,6 +200,7 @@ impl<P: PlayerStateProvider + 'static> MacOSMediaSource<P> {
         let (tx, rx) = mpsc::unbounded_channel();
 
         tokio::spawn(async move {
+            debug!("starting macOS media polling task");
             let mut monitor = PlayerMonitor::new();
             let mut interval = time::interval(Duration::from_secs(1));
             // Use Skip to avoid processing stale states when system is under load.
@@ -215,23 +216,33 @@ impl<P: PlayerStateProvider + 'static> MacOSMediaSource<P> {
                 let (music_state, spotify_state) = tokio::join!(music_future, spotify_future);
 
                 // Process Music.app state
+                #[cfg(feature = "tracing")]
+                if let Err(ref e) = music_state {
+                    tracing::debug!(player = "Music", error = %e, "failed to get player state, treating as not running");
+                }
                 let music_events = monitor.process_player("Music", music_state.ok().flatten());
 
                 // Send Music.app events
                 for event in music_events {
                     if tx.send(event).is_err() {
-                        return; // Receiver dropped
+                        debug!("macOS media polling task shutting down: consumer dropped");
+                        return;
                     }
                 }
 
                 // Process Spotify state
+                #[cfg(feature = "tracing")]
+                if let Err(ref e) = spotify_state {
+                    tracing::debug!(player = "Spotify", error = %e, "failed to get player state, treating as not running");
+                }
                 let spotify_events =
                     monitor.process_player("Spotify", spotify_state.ok().flatten());
 
                 // Send Spotify events
                 for event in spotify_events {
                     if tx.send(event).is_err() {
-                        return; // Receiver dropped
+                        debug!("macOS media polling task shutting down: consumer dropped");
+                        return;
                     }
                 }
             }
