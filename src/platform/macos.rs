@@ -13,20 +13,9 @@ use tokio::time;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::error::{MediaSourceError, Result};
+use crate::platform::state::{PlayerState, diff_player_state};
 use crate::source::{EventStream, MediaSource};
 use crate::types::{MediaEvent, PlaybackState, PlayerInfo, Track};
-
-/// Internal player state representation for macOS implementation.
-///
-/// This structure is used internally to track player state changes and
-/// is not part of the public API.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PlayerState {
-    pub track: Track,
-    pub playback_state: PlaybackState,
-    pub position: Option<Duration>,
-    pub volume: Option<f64>,
-}
 
 /// Internal trait for abstracting player state retrieval.
 ///
@@ -157,7 +146,7 @@ impl PlayerMonitor {
 
                 // Check for state changes
                 if let Some(last_state) = self.players.get(player_name) {
-                    Self::detect_changes(player_name, last_state, &state, &mut events);
+                    events.extend(diff_player_state(player_name, Some(last_state), &state));
                 } else {
                     // First time seeing this player with state
                     events.push(MediaEvent::TrackChanged {
@@ -187,56 +176,6 @@ impl PlayerMonitor {
         }
 
         events
-    }
-
-    fn detect_changes(
-        player_name: &str,
-        last: &PlayerState,
-        current: &PlayerState,
-        events: &mut Vec<MediaEvent>,
-    ) {
-        // Check for track change
-        if last.track != current.track {
-            events.push(MediaEvent::TrackChanged {
-                player_name: player_name.to_string(),
-                track: current.track.clone(),
-            });
-        }
-
-        // Check for playback state change
-        if last.playback_state != current.playback_state {
-            events.push(MediaEvent::StateChanged {
-                player_name: player_name.to_string(),
-                state: current.playback_state,
-            });
-        }
-
-        // Check for position change (seek detection)
-
-        if let Some(current_pos) = current.position {
-            let should_emit = last.position.is_none_or(|last_pos| {
-                // Detect seek: position difference > 2 seconds
-                let diff = current_pos.abs_diff(last_pos);
-                diff > Duration::from_secs(2)
-            });
-
-            if should_emit {
-                events.push(MediaEvent::PositionChanged {
-                    player_name: player_name.to_string(),
-                    position: current_pos,
-                });
-            }
-        }
-
-        // Check for volume change
-        if current.volume != last.volume
-            && let Some(vol) = current.volume
-        {
-            events.push(MediaEvent::VolumeChanged {
-                player_name: player_name.to_string(),
-                volume: vol,
-            });
-        }
     }
 }
 
@@ -727,24 +666,59 @@ mod tests {
         );
         monitor.process_player("Music", Some(initial_state));
 
-        // New state with different track (keep position similar to avoid position change event)
+        // New state with a different track. The new track's position is reported as a fresh
+        // PositionChanged: a track change resets the seek baseline, so the new track's position is
+        // emitted regardless of how close it is to the previous track's position.
         let track2 = create_test_track("Song 2");
         let new_state = create_test_player_state_with_track(
             track2.clone(),
             PlaybackState::Playing,
-            Some(Duration::from_secs(11)), // Only 1 second difference
+            Some(Duration::from_secs(11)),
             Some(0.8),
         );
         let events = monitor.process_player("Music", Some(new_state));
 
-        // Should only detect track change
         assert_eq!(
             events,
-            vec![MediaEvent::TrackChanged {
-                player_name: "Music".to_string(),
-                track: track2
-            }]
+            vec![
+                MediaEvent::TrackChanged {
+                    player_name: "Music".to_string(),
+                    track: track2
+                },
+                MediaEvent::PositionChanged {
+                    player_name: "Music".to_string(),
+                    position: Duration::from_secs(11)
+                },
+            ]
         );
+    }
+
+    #[test]
+    fn test_player_monitor_metadata_only_change_not_a_track_change() {
+        let mut monitor = PlayerMonitor::new();
+
+        let track = create_test_track("Song 1");
+        let initial_state = create_test_player_state_with_track(
+            track.clone(),
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+            Some(0.8),
+        );
+        monitor.process_player("Music", Some(initial_state));
+
+        // Same title and artist, but late-loading metadata (album) changes. Track identity is
+        // title + artist, so this is NOT reported as a track change.
+        let mut updated_track = track;
+        updated_track.album = Some("Different Album".to_string());
+        let new_state = create_test_player_state_with_track(
+            updated_track,
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+            Some(0.8),
+        );
+        let events = monitor.process_player("Music", Some(new_state));
+
+        assert_eq!(events, Vec::<MediaEvent>::new());
     }
 
     #[test]
