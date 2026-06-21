@@ -19,3 +19,10 @@ pub mod macos;
 
 #[cfg(target_os = "windows")]
 pub mod windows;
+
+/// Platform-agnostic player-state snapshot and event diffing.
+///
+/// Currently only the Windows backend consumes this; the `cfg` widens as other backends adopt
+/// it. The module itself has no platform dependencies.
+#[cfg(target_os = "windows")]
+mod state;
