@@ -147,16 +147,20 @@ impl WindowsMediaControlProvider {
         Ok(Self { manager })
     }
 
-    fn get_sessions(&self) -> Result<Vec<WinSession>> {
-        let sessions = self.manager.GetSessions().map_err(|e| {
+    /// Enumerates the raw session objects from a session manager.
+    ///
+    /// Sessions that fail to fetch via `GetAt` are skipped; an error is only returned when the
+    /// session list itself or its size cannot be read.
+    fn collect_sessions(manager: &SessionManager) -> Result<Vec<WinSession>> {
+        let sessions = manager.GetSessions().map_err(|e| {
             MediaSourceError::ConnectionError(format!("Failed to get sessions: {e}"))
         })?;
 
-        let mut result = Vec::new();
         let size = sessions.Size().map_err(|e| {
             MediaSourceError::ConnectionError(format!("Failed to get sessions size: {e}"))
         })?;
 
+        let mut result = Vec::new();
         for i in 0..size {
             if let Ok(session) = sessions.GetAt(i) {
                 result.push(session);
@@ -164,6 +168,10 @@ impl WindowsMediaControlProvider {
         }
 
         Ok(result)
+    }
+
+    fn get_sessions(&self) -> Result<Vec<WinSession>> {
+        Self::collect_sessions(&self.manager)
     }
 
     fn get_session_id(session: &WinSession) -> Result<String> {
@@ -303,22 +311,14 @@ impl WindowsMediaControlProvider {
     }
 
     fn get_sessions_from_manager(manager: &SessionManager) -> Result<Vec<SessionWithId>> {
-        let sessions = manager.GetSessions().map_err(|e| {
-            MediaSourceError::ConnectionError(format!("Failed to get sessions: {e}"))
-        })?;
-
-        let mut result = Vec::new();
-        let size = sessions.Size().map_err(|e| {
-            MediaSourceError::ConnectionError(format!("Failed to get sessions size: {e}"))
-        })?;
-
-        for i in 0..size {
-            if let Ok(session) = sessions.GetAt(i)
-                && let Ok(id) = Self::get_session_id(&session)
-            {
-                result.push(SessionWithId { id, session });
-            }
-        }
+        let result = Self::collect_sessions(manager)?
+            .into_iter()
+            .filter_map(|session| {
+                Self::get_session_id(&session)
+                    .ok()
+                    .map(|id| SessionWithId { id, session })
+            })
+            .collect();
 
         Ok(result)
     }
@@ -471,6 +471,15 @@ pub struct WindowsMediaSource<P: MediaSessionProvider = WindowsMediaControlProvi
     provider: Arc<P>,
 }
 
+/// A newly discovered session whose handlers have been registered but whose authoritative
+/// state has not yet been read and emitted.
+struct PendingSession {
+    id: String,
+    entry: SessionEntry,
+    session_state: Arc<StdMutex<SessionState>>,
+    ready: Arc<AtomicBool>,
+}
+
 /// Event-driven player monitor using Windows Runtime event handlers.
 struct EventDrivenPlayerMonitor {
     sessions: HashMap<String, SessionEntry>,
@@ -497,23 +506,64 @@ impl EventDrivenPlayerMonitor {
             });
         }
 
-        // Collect new sessions (not yet tracked) and fetch their states in parallel
-        // so that a slow or hung player does not block discovery of others.
+        // Collect sessions not yet tracked, then register their handlers up front. Registration
+        // is synchronous and performs no I/O, so a handler can start observing changes
+        // immediately. The authoritative state is read once per session afterwards (below) in a
+        // single parallel batch: reading after registration means no change can slip through an
+        // unwatched window, and reading only once avoids the redundant second round-trip a
+        // pre-registration read would otherwise require.
         let new_sessions: Vec<SessionWithId> = sessions_with_ids
             .into_iter()
             .filter(|s| !self.sessions.contains_key(&s.id))
             .collect();
 
+        let mut pending: Vec<PendingSession> = Vec::new();
+        for SessionWithId { id, session } in new_sessions {
+            // `ready` gates handler emissions until PlayerAdded has been sent, so a handler
+            // firing during this setup cannot push TrackChanged/StateChanged/PositionChanged
+            // into the channel ahead of PlayerAdded. The cache starts empty; the authoritative
+            // read below fills it before any event is emitted.
+            let ready = Arc::new(AtomicBool::new(false));
+            let session_state = Arc::new(StdMutex::new(SessionState {
+                track: None,
+                position: None,
+                playback_state: PlaybackState::Stopped,
+            }));
+
+            let entry = self.register_event_handlers(
+                session,
+                &id,
+                &session_state,
+                Arc::new(AtomicBool::new(false)),
+                &ready,
+            );
+
+            // Keep only sessions whose three handlers all registered. A partial registration is
+            // dropped here (SessionEntry::drop deregisters any successful handlers), so the next
+            // SessionsChanged event retries.
+            if entry.is_fully_registered() {
+                pending.push(PendingSession {
+                    id,
+                    entry,
+                    session_state,
+                    ready,
+                });
+            }
+        }
+
+        // Read every registered session's state in parallel so a slow or hung player does not
+        // block discovery of the others.
         let states = future::join_all(
-            new_sessions
+            pending
                 .iter()
-                .map(|s| WindowsMediaControlProvider::get_session_state_bounded(&s.session)),
+                .map(|p| WindowsMediaControlProvider::get_session_state_bounded(&p.entry.session)),
         )
         .await;
 
-        for (session_with_id, state_result) in new_sessions.into_iter().zip(states) {
-            let Ok(initial_state) = state_result else {
-                // On failure, skip insertion so the next SessionsChanged event retries.
+        for (p, state_result) in pending.into_iter().zip(states) {
+            let Ok(state) = state_result else {
+                // Read failed or timed out: drop the entry (which deregisters the handlers) and
+                // skip, so the next SessionsChanged event retries.
                 // FIXME: if no SessionsChanged fires after this (the player is already running
                 // and stable), this session is permanently untracked for the lifetime of the
                 // stream. A background retry task per failed session would fix this, but adds
@@ -521,68 +571,30 @@ impl EventDrivenPlayerMonitor {
                 continue;
             };
 
-            let session_id = session_with_id.id;
-            let session = session_with_id.session;
-
-            let removed = Arc::new(AtomicBool::new(false));
-            // Handlers are registered below but must not emit until PlayerAdded has been sent.
-            // Otherwise a handler firing during the registration/re-read window could push
-            // TrackChanged/StateChanged/PositionChanged into the channel before PlayerAdded,
-            // leaving the consumer with events for a player it has not seen added yet.
-            // `ready` gates handler emissions; it is flipped to true only after PlayerAdded.
-            let ready = Arc::new(AtomicBool::new(false));
-            let session_state = Arc::new(StdMutex::new(SessionState {
-                track: Some(initial_state.track.clone()),
-                position: initial_state.position,
-                playback_state: initial_state.playback_state,
-            }));
-
-            let entry = self.register_event_handlers(
-                session,
-                &session_id,
-                &Arc::clone(&session_state),
-                Arc::clone(&removed),
-                &ready,
-            );
-
-            // Only insert and emit events when all three handlers registered successfully.
-            // If any token is None the session is not inserted, so the next SessionsChanged
-            // event will retry. SessionEntry::drop cleans up any partial registrations.
-            if entry.is_fully_registered() {
-                // Re-read state to catch any changes that occurred during the registration
-                // window (between the parallel get_session_state above and handler registration).
-                // Handlers stay gated by `ready` until PlayerAdded is sent, so any change they
-                // observe meanwhile updates the cache without emitting out-of-order events.
-                let emit_state =
-                    match WindowsMediaControlProvider::get_session_state_bounded(&entry.session)
-                        .await
-                    {
-                        Ok(current) => {
-                            let mut state =
-                                session_state.lock().unwrap_or_else(PoisonError::into_inner);
-                            state.track = Some(current.track.clone());
-                            state.position = current.position;
-                            state.playback_state = current.playback_state;
-                            current
-                        }
-                        Err(_) => initial_state,
-                    };
-
-                let _ = self.event_tx.send(MediaEvent::PlayerAdded {
-                    player_name: session_id.clone(),
-                });
-                let _ = self.event_tx.send(MediaEvent::TrackChanged {
-                    player_name: session_id.clone(),
-                    track: emit_state.track,
-                });
-                let _ = self.event_tx.send(MediaEvent::StateChanged {
-                    player_name: session_id.clone(),
-                    state: emit_state.playback_state,
-                });
-                // PlayerAdded is now queued ahead of any handler event; allow handlers to emit.
-                ready.store(true, Ordering::Release);
-                self.sessions.insert(session_id, entry);
+            {
+                let mut cache = p
+                    .session_state
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                cache.track = Some(state.track.clone());
+                cache.position = state.position;
+                cache.playback_state = state.playback_state;
             }
+
+            let _ = self.event_tx.send(MediaEvent::PlayerAdded {
+                player_name: p.id.clone(),
+            });
+            let _ = self.event_tx.send(MediaEvent::TrackChanged {
+                player_name: p.id.clone(),
+                track: state.track,
+            });
+            let _ = self.event_tx.send(MediaEvent::StateChanged {
+                player_name: p.id.clone(),
+                state: state.playback_state,
+            });
+            // PlayerAdded is now queued ahead of any handler event; allow handlers to emit.
+            p.ready.store(true, Ordering::Release);
+            self.sessions.insert(p.id, p.entry);
         }
     }
 
