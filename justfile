@@ -20,6 +20,11 @@ build-windows-aarch64:
 test:
   cargo test --all-targets --all-features
 
+lint: biome clippy
+
+biome:
+  biome ci src
+
 clippy: clippy-linux clippy-macos clippy-windows
 
 clippy-linux:
