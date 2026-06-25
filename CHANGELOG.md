@@ -14,7 +14,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - macOS: Query Music.app and Spotify with a single `osascript` invocation instead of one per player, halving the number of process spawns per poll. Player state retrieval is now backed by a single consolidated JXA script (`player_states.js`)
-- Bump rust version to 1.96.0
 
 ## [0.3.0] - 2026-06-21
 
