@@ -38,5 +38,5 @@ doc-build:
   cargo doc --no-deps
 
 [macos]
-run-jxa app:
-  osascript -l JavaScript "src/platform/jxa/{{app}}.js"
+run-jxa:
+  osascript -l JavaScript "src/platform/jxa/player_states.js"

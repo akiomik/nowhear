@@ -27,6 +27,22 @@ pub trait PlayerStateProvider: Send + Sync {
         player_name: &str,
     ) -> impl Future<Output = Result<Option<PlayerState>>> + Send;
     fn list_available_players(&self) -> impl Future<Output = Result<Vec<String>>> + Send;
+
+    /// Retrieves the state of every supported player in a single query.
+    ///
+    /// The AppleScript backend fetches both Music.app and Spotify with one
+    /// `osascript` invocation, halving the number of process spawns per poll
+    /// compared to querying each player separately.
+    fn get_all_player_states(&self) -> impl Future<Output = Result<AllPlayerStates>> + Send;
+}
+
+/// Snapshot of every supported macOS player, retrieved in a single query.
+///
+/// A `None` field means that player is not running (or not currently playing).
+/// Not part of the public API.
+pub struct AllPlayerStates {
+    pub music: Option<PlayerState>,
+    pub spotify: Option<PlayerState>,
 }
 
 /// AppleScript-based provider for macOS.
@@ -37,51 +53,54 @@ pub struct AppleScriptProvider;
 
 impl PlayerStateProvider for AppleScriptProvider {
     async fn get_player_state(&self, player_name: &str) -> Result<Option<PlayerState>> {
-        match player_name {
-            "Music" => Self::get_music_app_state().await,
-            "Spotify" => Self::get_spotify_state().await,
-            _ => Err(MediaSourceError::PlayerNotFound(player_name.to_string())),
+        // Validate the name before spawning osascript so unknown players fail cheaply.
+        if !matches!(player_name, "Music" | "Spotify") {
+            return Err(MediaSourceError::PlayerNotFound(player_name.to_string()));
         }
+
+        let states = self.get_all_player_states().await?;
+        Ok(match player_name {
+            "Spotify" => states.spotify,
+            _ => states.music,
+        })
     }
 
     async fn list_available_players(&self) -> Result<Vec<String>> {
-        let mut players = Vec::new();
+        // A transient failure is treated as "no players running" to match the
+        // previous per-player `.ok().flatten()` behavior.
+        let states = self
+            .get_all_player_states()
+            .await
+            .unwrap_or(AllPlayerStates {
+                music: None,
+                spotify: None,
+            });
 
-        if Self::get_music_app_state().await.ok().flatten().is_some() {
+        let mut players = Vec::new();
+        if states.music.is_some() {
             players.push("Music".to_string());
         }
-
-        if Self::get_spotify_state().await.ok().flatten().is_some() {
+        if states.spotify.is_some() {
             players.push("Spotify".to_string());
         }
 
         Ok(players)
     }
-}
 
-impl AppleScriptProvider {
-    async fn get_music_app_state() -> Result<Option<PlayerState>> {
-        let script = include_str!("jxa/music.js");
+    async fn get_all_player_states(&self) -> Result<AllPlayerStates> {
+        let script = include_str!("jxa/player_states.js");
 
         let output = execute_applescript(script).await?;
-        if output.is_empty() {
-            Ok(None)
-        } else {
-            let jxa_state: AppleScriptPlayerState = serde_json::from_str(&output)?;
-            Ok(Some(jxa_state.into_music_player_state()))
-        }
-    }
+        let raw: AllAppleScriptStates = serde_json::from_str(&output)?;
 
-    async fn get_spotify_state() -> Result<Option<PlayerState>> {
-        let script = include_str!("jxa/spotify.js");
-
-        let output = execute_applescript(script).await?;
-        if output.is_empty() {
-            Ok(None)
-        } else {
-            let jxa_state: AppleScriptPlayerState = serde_json::from_str(&output)?;
-            Ok(Some(jxa_state.into_spotify_player_state()))
-        }
+        Ok(AllPlayerStates {
+            music: raw
+                .music
+                .map(AppleScriptPlayerState::into_music_player_state),
+            spotify: raw
+                .spotify
+                .map(AppleScriptPlayerState::into_spotify_player_state),
+        })
     }
 }
 
@@ -101,7 +120,9 @@ impl AppleScriptProvider {
 /// alternative that works well in async contexts.
 ///
 /// The polling interval is fixed at 1 second, which provides a good balance between
-/// responsiveness and system resource usage.
+/// responsiveness and system resource usage. Each poll queries Music.app and Spotify
+/// with a single `osascript` invocation rather than one per player, halving the number
+/// of process spawns per tick.
 ///
 /// # Note
 ///
@@ -210,17 +231,22 @@ impl<P: PlayerStateProvider + 'static> MacOSMediaSource<P> {
             loop {
                 interval.tick().await;
 
-                // Poll both players in parallel
-                let music_future = provider.get_player_state("Music");
-                let spotify_future = provider.get_player_state("Spotify");
-                let (music_state, spotify_state) = tokio::join!(music_future, spotify_future);
+                // Poll both players with a single osascript invocation.
+                let states = provider.get_all_player_states().await;
+
+                #[cfg(feature = "tracing")]
+                if let Err(ref e) = states {
+                    tracing::debug!(error = %e, "failed to get player states, treating all as not running");
+                }
+
+                // A failed query is treated as "no players running".
+                let (music_state, spotify_state) = match states {
+                    Ok(states) => (states.music, states.spotify),
+                    Err(_) => (None, None),
+                };
 
                 // Process Music.app state
-                #[cfg(feature = "tracing")]
-                if let Err(ref e) = music_state {
-                    tracing::debug!(player = "Music", error = %e, "failed to get player state, treating as not running");
-                }
-                let music_events = monitor.process_player("Music", music_state.ok().flatten());
+                let music_events = monitor.process_player("Music", music_state);
 
                 // Send Music.app events
                 for event in music_events {
@@ -231,12 +257,7 @@ impl<P: PlayerStateProvider + 'static> MacOSMediaSource<P> {
                 }
 
                 // Process Spotify state
-                #[cfg(feature = "tracing")]
-                if let Err(ref e) = spotify_state {
-                    tracing::debug!(player = "Spotify", error = %e, "failed to get player state, treating as not running");
-                }
-                let spotify_events =
-                    monitor.process_player("Spotify", spotify_state.ok().flatten());
+                let spotify_events = monitor.process_player("Spotify", spotify_state);
 
                 // Send Spotify events
                 for event in spotify_events {
@@ -300,6 +321,16 @@ async fn execute_applescript(script: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Deserialization target for the `jxa/player_states.js` output.
+///
+/// Each field is `None` when the corresponding player is not running or not
+/// currently playing.
+#[derive(Debug, Deserialize)]
+struct AllAppleScriptStates {
+    music: Option<AppleScriptPlayerState>,
+    spotify: Option<AppleScriptPlayerState>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum AppleScriptPlaybackState {
     #[serde(rename = "stopped")]
@@ -316,9 +347,9 @@ enum AppleScriptPlaybackState {
 
 /// Intermediate representation of player state from AppleScript (JXA).
 ///
-/// This struct is used to deserialize JSON output from JXA scripts that query
-/// Music.app or Spotify. It serves as a bridge between the AppleScript layer
-/// and the internal [`PlayerState`] representation.
+/// This struct is used to deserialize the JSON output of the JXA script that
+/// queries Music.app and Spotify. It serves as a bridge between the AppleScript
+/// layer and the internal [`PlayerState`] representation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AppleScriptPlayerState {
@@ -459,6 +490,13 @@ mod tests {
                 .filter_map(|(name, state)| state.as_ref().map(|_| name.clone()))
                 .collect();
             Ok(players)
+        }
+
+        async fn get_all_player_states(&self) -> Result<AllPlayerStates> {
+            Ok(AllPlayerStates {
+                music: self.states.get("Music").cloned().flatten(),
+                spotify: self.states.get("Spotify").cloned().flatten(),
+            })
         }
     }
 
@@ -618,6 +656,90 @@ mod tests {
                 volume: Some(0.5),
             }
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_all_player_states_returns_both() -> Result<()> {
+        let music_state = create_test_player_state_with_track(
+            create_test_track("Music Song"),
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+            Some(0.8),
+        );
+        let spotify_state = create_test_player_state_with_track(
+            create_test_track("Spotify Song"),
+            PlaybackState::Paused,
+            Some(Duration::from_secs(5)),
+            Some(0.7),
+        );
+        let provider = MockPlayerStateProvider::new()
+            .with_player("Music", Some(music_state.clone()))
+            .with_player("Spotify", Some(spotify_state.clone()));
+
+        let states = provider.get_all_player_states().await?;
+        assert_eq!(states.music, Some(music_state));
+        assert_eq!(states.spotify, Some(spotify_state));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_all_player_states_with_missing_players() -> Result<()> {
+        let music_state = create_test_player_state_with_track(
+            create_test_track("Music Song"),
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+            Some(0.8),
+        );
+        let provider = MockPlayerStateProvider::new()
+            .with_player("Music", Some(music_state.clone()))
+            .with_player("Spotify", None);
+
+        let states = provider.get_all_player_states().await?;
+        assert_eq!(states.music, Some(music_state));
+        assert_eq!(states.spotify, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_all_applescript_states_deserialize() -> Result<()> {
+        let json = r#"{
+            "music": {
+                "playerState": "playing",
+                "playerPosition": 45.5,
+                "soundVolume": 80,
+                "trackName": "Music Song",
+                "trackArtist": "Music Artist",
+                "trackAlbum": "Music Album",
+                "trackAlbumArtist": "Music Album Artist",
+                "trackNumber": 3,
+                "trackDuration": 180.0
+            },
+            "spotify": null
+        }"#;
+
+        let states: AllAppleScriptStates = serde_json::from_str(json)?;
+
+        assert_eq!(
+            states.music.map(|s| s.track_name),
+            Some("Music Song".to_string())
+        );
+        assert_eq!(states.spotify, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_all_applescript_states_deserialize_both_null() -> Result<()> {
+        let json = r#"{ "music": null, "spotify": null }"#;
+
+        let states: AllAppleScriptStates = serde_json::from_str(json)?;
+
+        assert_eq!(states.music, None);
+        assert_eq!(states.spotify, None);
 
         Ok(())
     }
