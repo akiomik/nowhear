@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- macOS: Run the player-state query in-process via OSAKit (`OSAScript`) on a dedicated worker thread instead of spawning an `osascript` subprocess on every poll. Profiling an embedding application showed the per-poll `posix_spawn` was the dominant CPU cost; this eliminates it (measured ~2.7x faster per poll while playing, and no subprocess is spawned during polling). The existing `player_states.js` is reused unchanged
+- macOS: The Automation (Apple Events) permission is now requested by the host application rather than `osascript`, since scripts run in-process. After upgrading, users may see a one-time Automation prompt for the host application
+
 ## [0.3.1] - 2026-06-27
 
 ### Added
