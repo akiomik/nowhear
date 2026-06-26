@@ -1,4 +1,6 @@
-//! macOS-specific implementation using AppleScript.
+//! macOS-specific implementation using in-process OSA (JavaScript-for-Automation).
+
+mod osa;
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -7,7 +9,6 @@ use std::time::Duration;
 
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
-use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::time;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -30,9 +31,9 @@ pub trait PlayerStateProvider: Send + Sync {
 
     /// Retrieves the state of every supported player in a single query.
     ///
-    /// The AppleScript backend fetches both Music.app and Spotify with one
-    /// `osascript` invocation, halving the number of process spawns per poll
-    /// compared to querying each player separately.
+    /// The OSA backend fetches both Music.app and Spotify with a single script
+    /// execution, halving the number of queries per poll compared to querying
+    /// each player separately.
     fn get_all_player_states(&self) -> impl Future<Output = Result<AllPlayerStates>> + Send;
 }
 
@@ -88,9 +89,9 @@ impl PlayerStateProvider for AppleScriptProvider {
     }
 
     async fn get_all_player_states(&self) -> Result<AllPlayerStates> {
-        let script = include_str!("jxa/player_states.js");
+        let script = include_str!("macos/jxa/player_states.js");
 
-        let output = execute_applescript(script).await?;
+        let output = osa::execute(script).await?;
         let raw: AllAppleScriptStates = serde_json::from_str(&output)?;
 
         Ok(AllPlayerStates {
@@ -114,15 +115,18 @@ impl PlayerStateProvider for AppleScriptProvider {
 ///
 /// # Implementation Details
 ///
-/// This implementation uses AppleScript for querying player state rather than
-/// `NSDistributedNotificationCenter`, which would require running on the main thread.
-/// The AppleScript approach with periodic polling (every 1 second) offers a simpler
-/// alternative that works well in async contexts.
+/// This implementation queries player state via the Open Scripting Architecture
+/// (OSA) rather than `NSDistributedNotificationCenter`, which would require
+/// running on the main thread. Periodic polling (every 1 second) is a simpler
+/// alternative that works well in async contexts and, unlike notifications, can
+/// observe volume and position changes.
 ///
-/// The polling interval is fixed at 1 second, which provides a good balance between
-/// responsiveness and system resource usage. Each poll queries Music.app and Spotify
-/// with a single `osascript` invocation rather than one per player, halving the number
-/// of process spawns per tick.
+/// The polling interval is fixed at 1 second, which provides a good balance
+/// between responsiveness and system resource usage. Each poll runs a single
+/// JavaScript-for-Automation script that returns both Music.app and Spotify in
+/// one call. The script is executed in-process on a dedicated worker thread (see
+/// [`crate::platform::osa`]) instead of spawning an `osascript` subprocess per
+/// poll, which eliminates the per-poll `posix_spawn` cost.
 ///
 /// # Note
 ///
@@ -231,7 +235,7 @@ impl<P: PlayerStateProvider + 'static> MacOSMediaSource<P> {
             loop {
                 interval.tick().await;
 
-                // Poll both players with a single osascript invocation.
+                // Poll both players with a single in-process OSA script execution.
                 let states = provider.get_all_player_states().await;
 
                 #[cfg(feature = "tracing")]
@@ -297,28 +301,6 @@ impl<P: PlayerStateProvider + 'static> MediaSource for MacOSMediaSource<P> {
         let stream = Self::create_event_stream_impl(Arc::clone(&self.provider));
         Ok(Box::pin(stream))
     }
-}
-
-async fn execute_applescript(script: &str) -> Result<String> {
-    let output = Command::new("osascript")
-        .arg("-l")
-        .arg("JavaScript")
-        .arg("-e")
-        .arg(script)
-        .output()
-        .await
-        .map_err(|e| {
-            MediaSourceError::InternalError(format!("Failed to execute AppleScript: {e}"))
-        })?;
-
-    if !output.status.success() {
-        return Err(MediaSourceError::InternalError(format!(
-            "AppleScript error: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )));
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Deserialization target for the `jxa/player_states.js` output.
