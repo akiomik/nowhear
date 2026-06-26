@@ -1,6 +1,9 @@
-// Queries both Music.app and Spotify in a single script execution. Each player
-// is wrapped in its own try/catch so that a failure in one (e.g. the app is not
-// installed) does not prevent the other from being reported.
+// Helper definitions for querying Music.app and Spotify. The caller (Rust)
+// appends the entry point — a `JSON.stringify({ music, spotify })` that invokes
+// `safeGetState` only for players it has already confirmed are running, so this
+// script never calls `app.running()` itself. Each query is wrapped in its own
+// try/catch so a failure in one player does not prevent the other from being
+// reported.
 
 // Reads the current track's fields with one Apple Event via `properties()`.
 //
@@ -37,10 +40,6 @@ function readTrackIndividually(app) {
 }
 
 function getState(app, readTrack, includeArtwork) {
-	if (!app.running()) {
-		return null;
-	}
-
 	const playerState = app.playerState();
 	if (playerState !== "playing" && playerState !== "paused") {
 		return null;
@@ -69,8 +68,3 @@ function safeGetState(appName, readTrack, includeArtwork) {
 		return null;
 	}
 }
-
-JSON.stringify({
-	music: safeGetState("Music", readTrackProperties, false),
-	spotify: safeGetState("Spotify", readTrackIndividually, true),
-});

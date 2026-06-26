@@ -1,6 +1,7 @@
 //! macOS-specific implementation using in-process OSA (JavaScript-for-Automation).
 
 mod osa;
+mod running;
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -89,9 +90,17 @@ impl PlayerStateProvider for AppleScriptProvider {
     }
 
     async fn get_all_player_states(&self) -> Result<AllPlayerStates> {
-        let script = include_str!("macos/jxa/player_states.js");
+        // Determine which players are running in-process; this is far cheaper
+        // than an Apple Event `running` check and lets us skip OSA entirely when
+        // nothing is playing.
+        let Some((cache_key, source)) = build_script(running::running_players()) else {
+            return Ok(AllPlayerStates {
+                music: None,
+                spotify: None,
+            });
+        };
 
-        let output = osa::execute(script).await?;
+        let output = osa::execute(cache_key, source).await?;
         let raw: AllAppleScriptStates = serde_json::from_str(&output)?;
 
         Ok(AllPlayerStates {
@@ -103,6 +112,30 @@ impl PlayerStateProvider for AppleScriptProvider {
                 .map(AppleScriptPlayerState::into_spotify_player_state),
         })
     }
+}
+
+/// Builds the OSA script for the currently running players, or `None` when no
+/// supported player is running (in which case the query is skipped entirely).
+///
+/// The JXA file defines only helpers; the entry point composed here invokes
+/// `safeGetState` solely for running players, so the script never needs its own
+/// (expensive) `app.running()` check. The returned cache key is stable per
+/// running-set so each of the three variants is compiled at most once.
+fn build_script(running: running::RunningPlayers) -> Option<(&'static str, String)> {
+    const HELPERS: &str = include_str!("macos/jxa/player_states.js");
+    const MUSIC: &str = r#"safeGetState("Music", readTrackProperties, false)"#;
+    const SPOTIFY: &str = r#"safeGetState("Spotify", readTrackIndividually, true)"#;
+
+    let (cache_key, music_expr, spotify_expr) = match (running.music, running.spotify) {
+        (false, false) => return None,
+        (true, true) => ("both", MUSIC, SPOTIFY),
+        (true, false) => ("music", MUSIC, "null"),
+        (false, true) => ("spotify", "null", SPOTIFY),
+    };
+
+    let source =
+        format!("{HELPERS}\nJSON.stringify({{ music: {music_expr}, spotify: {spotify_expr} }});");
+    Some((cache_key, source))
 }
 
 /// macOS media source implementation using AppleScript.
@@ -684,6 +717,59 @@ mod tests {
         assert_eq!(states.spotify, None);
 
         Ok(())
+    }
+
+    // build_script tests
+
+    #[test]
+    fn test_build_script_skips_when_nothing_running() {
+        let result = build_script(running::RunningPlayers {
+            music: false,
+            spotify: false,
+        });
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_build_script_queries_only_running_players() {
+        for (running, key, want_music, want_spotify) in [
+            (
+                running::RunningPlayers {
+                    music: true,
+                    spotify: true,
+                },
+                "both",
+                true,
+                true,
+            ),
+            (
+                running::RunningPlayers {
+                    music: true,
+                    spotify: false,
+                },
+                "music",
+                true,
+                false,
+            ),
+            (
+                running::RunningPlayers {
+                    music: false,
+                    spotify: true,
+                },
+                "spotify",
+                false,
+                true,
+            ),
+        ] {
+            let (cache_key, source) = build_script(running).expect("a player is running");
+            assert_eq!(cache_key, key);
+
+            // A non-running player must not be queried (querying would launch it).
+            assert_eq!(source.contains(r#"safeGetState("Music""#), want_music);
+            assert_eq!(source.contains(r#"safeGetState("Spotify""#), want_spotify);
+            // The composed entry point must be present.
+            assert!(source.contains("JSON.stringify({ music:"));
+        }
     }
 
     #[test]

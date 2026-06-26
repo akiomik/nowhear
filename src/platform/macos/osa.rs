@@ -37,7 +37,10 @@ use crate::error::{MediaSourceError, Result};
 /// A unit of work for the OSA worker thread: a script to run and a channel to
 /// deliver its string result back to the awaiting caller.
 struct Request {
-    source: &'static str,
+    /// Stable identity for the compiled-script cache. Distinct sources must use
+    /// distinct keys; the same key must always map to the same source.
+    cache_key: &'static str,
+    source: String,
     reply: oneshot::Sender<Result<String>>,
 }
 
@@ -47,14 +50,16 @@ static ENGINE: OnceLock<Sender<Request>> = OnceLock::new();
 /// Executes `source` (a JavaScript-for-Automation script) in-process and
 /// returns its string result.
 ///
-/// The script is compiled once on first use and cached on the worker thread;
-/// subsequent calls reuse the compiled form. `source` is `'static` because in
-/// practice it is an `include_str!`-embedded script with a process lifetime.
-pub async fn execute(source: &'static str) -> Result<String> {
+/// `cache_key` identifies the compiled script on the worker thread: the source
+/// is compiled once per key and reused on subsequent calls, so callers that
+/// vary the script must pass a key per distinct variant. `source` is only read
+/// on a cache miss.
+pub async fn execute(cache_key: &'static str, source: String) -> Result<String> {
     let tx = ENGINE.get_or_init(spawn_worker);
 
     let (reply_tx, reply_rx) = oneshot::channel();
     tx.send(Request {
+        cache_key,
         source,
         reply: reply_tx,
     })
@@ -72,20 +77,24 @@ fn spawn_worker() -> Sender<Request> {
     thread::Builder::new()
         .name("nowhear-osa".to_string())
         .spawn(move || {
-            // Compiled scripts are cached by source pointer/identity so each
-            // distinct script is compiled only once. In practice there is a
-            // single embedded script.
+            // Compiled scripts are cached by key so each distinct script variant
+            // is compiled only once.
             let mut scripts: HashMap<&'static str, OsaScript> = HashMap::new();
 
-            while let Ok(Request { source, reply }) = rx.recv() {
+            while let Ok(Request {
+                cache_key,
+                source,
+                reply,
+            }) = rx.recv()
+            {
                 // Drain autoreleased objects (the result descriptor and its
                 // string value) every iteration so the long-lived thread does
                 // not accumulate memory.
                 let result = autoreleasepool(|_| {
-                    let script = match scripts.get(source) {
+                    let script = match scripts.get(cache_key) {
                         Some(script) => script,
-                        None => match OsaScript::compile(source) {
-                            Ok(compiled) => scripts.entry(source).or_insert(compiled),
+                        None => match OsaScript::compile(&source) {
+                            Ok(compiled) => scripts.entry(cache_key).or_insert(compiled),
                             // Compilation failures are not cached, so a transient
                             // failure can be retried on the next poll.
                             Err(e) => return Err(e),
