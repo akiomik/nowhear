@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-27
+
 ### Added
 
 - Optional `tracing` feature: enables diagnostic instrumentation via the `tracing` crate. Emits `debug`- and `warn`-level events for background task lifecycle, silently skipped errors, and platform-specific failures (D-Bus parse errors on Linux, AppleScript errors on macOS, Windows Media Control session errors on Windows)
@@ -94,7 +96,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Windows: Windows Media Control API support
 - Two example applications: `basic` and `stream`
 
-[unreleased]: https://github.com/akiomik/nowhear/compare/v0.3.0...HEAD
+[unreleased]: https://github.com/akiomik/nowhear/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/akiomik/nowhear/releases/tag/v0.3.1
 [0.3.0]: https://github.com/akiomik/nowhear/releases/tag/v0.3.0
 [0.2.0]: https://github.com/akiomik/nowhear/releases/tag/v0.2.0
 [0.1.3]: https://github.com/akiomik/nowhear/releases/tag/v0.1.3
