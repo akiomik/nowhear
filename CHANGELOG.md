@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - macOS: Run the player-state query in-process via OSAKit (`OSAScript`) on a dedicated worker thread instead of spawning an `osascript` subprocess on every poll. Profiling an embedding application showed the per-poll `posix_spawn` was the dominant CPU cost; this eliminates it (measured ~2.7x faster per poll while playing, and no subprocess is spawned during polling). The existing `player_states.js` is reused unchanged
 - macOS: The Automation (Apple Events) permission is now requested by the host application rather than `osascript`, since scripts run in-process. After upgrading, users may see a one-time Automation prompt for the host application
 - macOS: Fetch Music.app track fields with a single `currentTrack.properties()` Apple Event instead of one round-trip per field, roughly halving the per-poll cost while Music is playing. Spotify continues to read fields individually because it does not support `properties` on a track
+- macOS: Determine which players are running in-process via `NSRunningApplication` instead of an Apple Event `running` check inside the script. This removes the per-poll `LaunchServices` lookups (a significant share of the remaining CPU while playing), and skips OSA execution entirely when neither Music.app nor Spotify is running
 
 ## [0.3.1] - 2026-06-27
 
