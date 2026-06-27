@@ -1569,4 +1569,91 @@ mod tests {
         assert_eq!(spotify_track.duration, Some(Duration::from_mins(3)));
         assert_eq!(music_track.duration, spotify_track.duration);
     }
+
+    // Empty-string field handling in into_music_track / into_spotify_track
+
+    #[test]
+    fn test_applescript_player_state_into_music_track_empty_fields() {
+        // Empty strings for artist, album, album_artist, and art_url must map to the
+        // "absent" representation (vec![] / None) rather than leaking empty strings.
+        let state = AppleScriptPlayerState {
+            player_state: AppleScriptPlaybackState::Playing,
+            player_position: 0.0,
+            sound_volume: 50,
+            track_name: "Track".to_string(),
+            track_artist: String::new(),
+            track_album: String::new(),
+            track_album_artist: String::new(),
+            track_album_artwork_url: Some(String::new()),
+            track_number: 1,
+            track_duration: 180.0,
+        };
+
+        let track = state.into_music_track();
+
+        assert_eq!(track.artist, Vec::<String>::new());
+        assert_eq!(track.album, None);
+        assert_eq!(track.album_artist, Vec::<String>::new());
+        assert_eq!(track.art_url, None);
+    }
+
+    #[test]
+    fn test_applescript_player_state_into_spotify_track_empty_fields() {
+        // Same empty-field contract for the Spotify variant.
+        let state = AppleScriptPlayerState {
+            player_state: AppleScriptPlaybackState::Playing,
+            player_position: 0.0,
+            sound_volume: 50,
+            track_name: "Track".to_string(),
+            track_artist: String::new(),
+            track_album: String::new(),
+            track_album_artist: String::new(),
+            track_album_artwork_url: Some(String::new()),
+            track_number: 1,
+            track_duration: 180_000.0,
+        };
+
+        let track = state.into_spotify_track();
+
+        assert_eq!(track.artist, Vec::<String>::new());
+        assert_eq!(track.album, None);
+        assert_eq!(track.album_artist, Vec::<String>::new());
+        assert_eq!(track.art_url, None);
+    }
+
+    // MacOSMediaSource::new() — wraps AppleScriptProvider in an Arc, no I/O
+
+    #[test]
+    fn test_macos_media_source_new() {
+        let _source = MacOSMediaSource::new();
+    }
+
+    // AppleScriptProvider::get_player_state validates the player name before any OSA call
+
+    #[tokio::test]
+    async fn test_apple_script_provider_get_player_state_unknown_player() {
+        use crate::MediaSourceError;
+
+        let provider = AppleScriptProvider;
+        let result = provider.get_player_state("UnknownPlayer").await;
+        assert_eq!(
+            result,
+            Err(MediaSourceError::PlayerNotFound(
+                "UnknownPlayer".to_string()
+            ))
+        );
+    }
+
+    // event_stream() with mock provider — exercises the public API without OSA
+
+    #[tokio::test]
+    async fn test_event_stream_returns_ok_with_mock() -> Result<()> {
+        let provider = Arc::new(MockPlayerStateProvider::new());
+        let source = MacOSMediaSource::with_provider(provider);
+
+        let result = source.event_stream().await;
+        assert!(result.is_ok());
+
+        Ok(())
+    }
 }
