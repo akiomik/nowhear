@@ -26,7 +26,7 @@ test-cov:
 lint: biome clippy
 
 biome:
-  biome ci src
+  biome ci --error-on-warnings src
 
 clippy: clippy-linux clippy-macos clippy-windows
 
