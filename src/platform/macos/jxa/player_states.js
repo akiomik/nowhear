@@ -11,6 +11,7 @@
 // costs one Apple Event round-trip per field; `properties()` returns them all
 // at once, roughly halving the per-poll cost while a track is playing. Used for
 // Music.app, which supports it. (Spotify does not — see `readTrackIndividually`.)
+// biome-ignore lint/correctness/noUnusedVariables: called by JXA caller appended at runtime
 function readTrackProperties(app) {
 	const track = app.currentTrack.properties();
 	return {
@@ -27,6 +28,7 @@ function readTrackProperties(app) {
 //
 // Spotify does not support `properties` on a track — requesting it raises an
 // AppleEvent handler error (-10000) — so its fields must be read individually.
+// biome-ignore lint/correctness/noUnusedVariables: called by JXA caller appended at runtime
 function readTrackIndividually(app) {
 	const track = app.currentTrack;
 	return {
@@ -61,6 +63,7 @@ function getState(app, readTrack, includeArtwork) {
 	return state;
 }
 
+// biome-ignore lint/correctness/noUnusedVariables: called by JXA caller appended at runtime
 function safeGetState(appName, readTrack, includeArtwork) {
 	try {
 		return getState(Application(appName), readTrack, includeArtwork);
