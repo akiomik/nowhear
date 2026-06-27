@@ -21,7 +21,7 @@ Cross-platform library for monitoring media playback information in Rust.
 | Platform | API | Supported Players |
 |----------|-----|-------------------|
 | **Linux** | MPRIS (D-Bus) | Spotify, VLC, Rhythmbox, Chromium, Firefox, and any MPRIS-compatible player |
-| **macOS** | AppleScript (JXA) | Music.app, Spotify |
+| **macOS** | JXA (Open Scripting) | Music.app, Spotify |
 | **Windows** | Windows Media Control | Spotify, Windows Media Player, VLC, iTunes, Chrome/Edge, and any SMTC-compatible app |
 
 ## Installation
@@ -189,8 +189,9 @@ cargo run --example stream
 
 ### macOS
 
-- Uses AppleScript (JXA) to communicate with media players
+- Uses JavaScript for Automation (JXA), executed in-process via the Open Scripting Architecture (OSAKit), to query media players
 - Requires macOS 10.10 Yosemite or later (JXA support required)
+- Sends Apple Events to the media applications, so the host application may prompt for Automation permission on first use (System Settings → Privacy & Security → Automation)
 - Does not launch media applications if they're not already running
 - Supports Music.app and Spotify
 - Polling interval: 1000ms
