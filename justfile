@@ -20,6 +20,9 @@ build-windows-aarch64:
 test:
   cargo test --all-targets --all-features
 
+test-cov:
+  cargo llvm-cov --all-targets --all-features --workspace
+
 lint: biome clippy
 
 biome:
