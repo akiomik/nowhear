@@ -76,3 +76,53 @@ impl From<serde_json::Error> for MediaSourceError {
 /// }
 /// ```
 pub type Result<T> = result::Result<T, MediaSourceError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_player_not_found_display() {
+        let err = MediaSourceError::PlayerNotFound("spotify".to_string());
+        assert_eq!(err.to_string(), "Player not found: spotify");
+    }
+
+    #[test]
+    fn test_connection_error_display() {
+        let err = MediaSourceError::ConnectionError("timeout".to_string());
+        assert_eq!(
+            err.to_string(),
+            "Failed to connect to media service: timeout"
+        );
+    }
+
+    #[test]
+    fn test_parse_error_display() {
+        let err = MediaSourceError::ParseError("invalid JSON".to_string());
+        assert_eq!(
+            err.to_string(),
+            "Failed to parse media information: invalid JSON"
+        );
+    }
+
+    #[test]
+    fn test_unsupported_platform_display() {
+        let err = MediaSourceError::UnsupportedPlatform;
+        assert_eq!(err.to_string(), "Platform not supported");
+    }
+
+    #[test]
+    fn test_internal_error_display() {
+        let err = MediaSourceError::InternalError("unexpected state".to_string());
+        assert_eq!(err.to_string(), "Internal error: unexpected state");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_from_serde_json_error() {
+        let json_err = serde_json::from_str::<serde_json::Value>("{invalid}")
+            .expect_err("input is intentionally malformed JSON");
+        let err = MediaSourceError::from(json_err);
+        assert!(matches!(err, MediaSourceError::ParseError(_)));
+    }
+}
