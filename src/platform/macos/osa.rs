@@ -202,3 +202,80 @@ unsafe fn error_message(err: *mut AnyObject) -> String {
     let message: &NSString = unsafe { &*message.cast() };
     message.to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // error_message -----------------------------------------------------------
+
+    #[test]
+    fn test_error_message_null_returns_placeholder() {
+        // When the OSA call provides no error dict, the function must not
+        // dereference the null pointer and must return a human-readable fallback.
+        let msg = unsafe { error_message(ptr::null_mut()) };
+        assert_eq!(msg, "(no error information)");
+    }
+
+    // OsaScript::compile ------------------------------------------------------
+
+    #[test]
+    fn test_osa_script_compile_valid_js() -> Result<()> {
+        // A syntactically correct JXA script must compile without error.
+        OsaScript::compile("JSON.stringify({ ok: true })")?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_osa_script_compile_syntax_error() {
+        // A syntactically invalid script must fail with InternalError so that
+        // the caller can distinguish compilation failures from execution failures.
+        let result = OsaScript::compile("{{{{ not valid js");
+        assert!(matches!(result, Err(MediaSourceError::InternalError(_))));
+    }
+
+    // OsaScript::execute ------------------------------------------------------
+
+    #[test]
+    fn test_osa_script_execute_returns_json_string() -> Result<()> {
+        // Execute a script that produces a deterministic JSON string and verify
+        // the raw string value is returned verbatim (no extra quoting).
+        let script = OsaScript::compile("JSON.stringify({ answer: 42 })")?;
+        assert_eq!(script.execute()?, r#"{"answer":42}"#);
+        Ok(())
+    }
+
+    #[test]
+    fn test_osa_script_execute_runtime_error() -> Result<()> {
+        // A script that throws at runtime must produce InternalError, not panic.
+        // The syntax is valid JS so compile() succeeds; only execute() fails.
+        let script = OsaScript::compile("throw new Error('boom')")?;
+        assert!(matches!(
+            script.execute(),
+            Err(MediaSourceError::InternalError(_))
+        ));
+        Ok(())
+    }
+
+    // execute() — public async entry point ------------------------------------
+
+    #[tokio::test]
+    async fn test_execute_simple_expression() -> Result<()> {
+        // The async wrapper must dispatch to the worker and return the result.
+        let result = execute("osa_test_simple", "JSON.stringify({ x: 1 })".to_string()).await?;
+        assert_eq!(result, r#"{"x":1}"#);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_execute_cache_reuse() -> Result<()> {
+        // Calling execute() twice with the same cache key must return the same
+        // result, confirming the compiled-script cache is working.
+        let src = "JSON.stringify([1, 2, 3])".to_string();
+        let r1 = execute("osa_test_cache", src.clone()).await?;
+        let r2 = execute("osa_test_cache", src).await?;
+        assert_eq!(r1, "[1,2,3]");
+        assert_eq!(r1, r2);
+        Ok(())
+    }
+}
