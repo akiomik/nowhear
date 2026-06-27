@@ -359,4 +359,73 @@ mod tests {
         let events = diff_player_state("p", Some(&old), &new);
         assert_eq!(events, Vec::<MediaEvent>::new());
     }
+
+    #[test]
+    fn test_diff_player_state_no_previous_emits_track_state_and_position() {
+        // old = None (first discovery): TrackChanged + StateChanged + PositionChanged emitted,
+        // but VolumeChanged is NOT emitted because the caller is expected to handle the baseline.
+        let state = PlayerState {
+            track: create_test_track_for_windows("New Song"),
+            playback_state: PlaybackState::Playing,
+            position: Some(Duration::from_secs(5)),
+            volume: Some(0.8),
+        };
+
+        let events = diff_player_state("p", None, &state);
+
+        assert_eq!(
+            events,
+            vec![
+                MediaEvent::TrackChanged {
+                    player_name: "p".to_string(),
+                    track: state.track,
+                },
+                MediaEvent::StateChanged {
+                    player_name: "p".to_string(),
+                    state: PlaybackState::Playing,
+                },
+                MediaEvent::PositionChanged {
+                    player_name: "p".to_string(),
+                    position: Duration::from_secs(5),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_diff_player_state_position_none_emits_no_position_changed() {
+        // When new.position is None the PositionChanged branch is entirely skipped.
+        let old = PlayerState {
+            track: create_test_track_for_windows("Song"),
+            playback_state: PlaybackState::Playing,
+            position: Some(Duration::from_secs(10)),
+            volume: None,
+        };
+        let new = PlayerState {
+            position: None,
+            ..old.clone()
+        };
+
+        let events = diff_player_state("p", Some(&old), &new);
+
+        assert_eq!(events, Vec::<MediaEvent>::new());
+    }
+
+    #[test]
+    fn test_diff_player_state_volume_becomes_none_not_emitted() {
+        // old.volume = Some, new.volume = None: the third condition of the let-chain fails,
+        // so VolumeChanged is not emitted.
+        let mut old = create_test_state_for_windows(
+            create_test_track_for_windows("Song"),
+            PlaybackState::Playing,
+            Some(Duration::from_secs(10)),
+        );
+        old.volume = Some(0.8);
+        let mut new = old.clone();
+        new.volume = None;
+
+        let events = diff_player_state("p", Some(&old), &new);
+
+        assert_eq!(events, Vec::<MediaEvent>::new());
+    }
 }
