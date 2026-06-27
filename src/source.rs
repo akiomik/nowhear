@@ -278,3 +278,27 @@ impl Default for MediaSourceBuilder {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_media_source_builder_new() {
+        let _builder = MediaSourceBuilder::new();
+    }
+
+    #[test]
+    fn test_media_source_builder_default() {
+        let _builder = MediaSourceBuilder::default();
+    }
+
+    // On macOS, MacOSMediaSource::new() only wraps AppleScriptProvider in an Arc — no I/O.
+    // Linux and Windows require a live session bus / WinRT, so they are excluded.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn test_media_source_builder_build_succeeds() {
+        let result = MediaSourceBuilder::new().build().await;
+        assert!(result.is_ok());
+    }
+}
