@@ -205,4 +205,4 @@ jobs:
         uses: biomejs/setup-biome@v2
 
       - name: Run Biome
-        run: biome ci src
+        run: biome ci --error-on-warnings src
