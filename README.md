@@ -30,7 +30,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-nowhear = "0.4"
+nowhear = "0.5"
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
 futures = "0.3"
 ```
@@ -46,7 +46,7 @@ Enable a feature in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-nowhear = { version = "0.4", features = ["serde"] }
+nowhear = { version = "0.5", features = ["serde"] }
 ```
 
 With `serde` enabled, a `MediaEvent` serializes to JSON like this:
