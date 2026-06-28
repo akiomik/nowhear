@@ -5,6 +5,9 @@
 
 use std::result;
 
+#[cfg(target_os = "linux")]
+use zbus::{fdo, zvariant};
+
 use thiserror::Error;
 
 /// Errors that can occur when using the media source.
@@ -52,17 +55,15 @@ impl From<zbus::Error> for MediaSourceError {
 }
 
 #[cfg(target_os = "linux")]
-#[allow(clippy::absolute_paths)]
-impl From<zbus::zvariant::Error> for MediaSourceError {
-    fn from(value: zbus::zvariant::Error) -> Self {
+impl From<zvariant::Error> for MediaSourceError {
+    fn from(value: zvariant::Error) -> Self {
         Self::ParseError(value.to_string())
     }
 }
 
 #[cfg(target_os = "linux")]
-#[allow(clippy::absolute_paths)]
-impl From<zbus::fdo::Error> for MediaSourceError {
-    fn from(value: zbus::fdo::Error) -> Self {
+impl From<fdo::Error> for MediaSourceError {
+    fn from(value: fdo::Error) -> Self {
         Self::ParseError(value.to_string())
     }
 }
@@ -142,6 +143,30 @@ mod tests {
         let json_err = serde_json::from_str::<serde_json::Value>("{invalid}")
             .expect_err("input is intentionally malformed JSON");
         let err = MediaSourceError::from(json_err);
+        assert!(matches!(err, MediaSourceError::ParseError(_)));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_from_zbus_error() {
+        let zbus_err = zbus::Error::Failure("something failed".to_string());
+        let err = MediaSourceError::from(zbus_err);
+        assert!(matches!(err, MediaSourceError::ConnectionError(_)));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_from_zbus_zvariant_error() {
+        let variant_err = zvariant::Error::Message("invalid type".to_string());
+        let err = MediaSourceError::from(variant_err);
+        assert!(matches!(err, MediaSourceError::ParseError(_)));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_from_zbus_fdo_error() {
+        let fdo_err = fdo::Error::Failed("fdo failure".to_string());
+        let err = MediaSourceError::from(fdo_err);
         assert!(matches!(err, MediaSourceError::ParseError(_)));
     }
 }
