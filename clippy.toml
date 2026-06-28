@@ -1,3 +1,3 @@
 # Valid identifiers in documentation that should not require backticks
 # The ".." appends to the default list instead of replacing it
-doc-valid-idents = ["AppleScript", "WinRT", ".."]
+doc-valid-idents = ["AppleScript", "OSAKit", "WinRT", ".."]

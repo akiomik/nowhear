@@ -1,4 +1,4 @@
-//! AppleScript-based player state provider for macOS.
+//! JXA-based player state provider for macOS.
 
 use std::future::Future;
 use std::time::Duration;
@@ -37,9 +37,9 @@ pub struct AllPlayerStates {
     pub spotify: Option<PlayerState>,
 }
 
-/// AppleScript-based provider for macOS.
+/// JXA-based provider for macOS.
 ///
-/// This provider uses AppleScript to query Music.app and Spotify for their
+/// This provider uses JXA (JavaScript for Automation) via OSAKit to query Music.app and Spotify for their
 /// current playback state.
 pub struct AppleScriptProvider;
 
@@ -152,10 +152,10 @@ enum AppleScriptPlaybackState {
     Rewinding,
 }
 
-/// Intermediate representation of player state from AppleScript (JXA).
+/// Intermediate representation of player state from JXA.
 ///
 /// This struct is used to deserialize the JSON output of the JXA script that
-/// queries Music.app and Spotify. It serves as a bridge between the AppleScript
+/// queries Music.app and Spotify. It serves as a bridge between the JXA
 /// layer and the internal [`PlayerState`] representation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

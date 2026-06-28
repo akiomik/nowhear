@@ -20,9 +20,9 @@ use crate::types::{MediaEvent, PlayerInfo};
 
 pub use provider::{AppleScriptProvider, PlayerStateProvider};
 
-/// macOS media source implementation using AppleScript.
+/// macOS media source implementation using JXA (JavaScript for Automation) via OSAKit.
 ///
-/// This implementation uses AppleScript to query the state of media players on macOS.
+/// This implementation uses JXA via OSAKit to query the state of media players on macOS.
 /// Currently supports:
 ///
 /// - **Music.app** (formerly iTunes)
