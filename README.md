@@ -35,6 +35,26 @@ tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
 futures = "0.3"
 ```
 
+## Feature Flags
+
+| Feature | Description |
+|---------|-------------|
+| `serde` | Derives `Serialize` and `Deserialize` for the public data types (`Track`, `PlaybackState`, `PlayerInfo`, and `MediaEvent`). `Duration` fields are represented as integer milliseconds, and `MediaEvent` is internally tagged with a `"type"` field. |
+| `tracing` | Enables diagnostic instrumentation via the [`tracing`](https://docs.rs/tracing) crate. |
+
+Enable a feature in your `Cargo.toml`:
+
+```toml
+[dependencies]
+nowhear = { version = "0.4", features = ["serde"] }
+```
+
+With `serde` enabled, a `MediaEvent` serializes to JSON like this:
+
+```json
+{ "type": "TrackChanged", "player_name": "spotify", "track": { "title": "...", "duration": 354000 } }
+```
+
 ## Usage
 
 ### Basic Example

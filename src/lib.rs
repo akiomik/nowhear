@@ -71,6 +71,7 @@
 //!
 //! | Feature | Description |
 //! |---------|-------------|
+//! | `serde` | Derives `serde::Serialize` and `serde::Deserialize` for the public data types ([`Track`], [`PlaybackState`], [`PlayerInfo`], and [`MediaEvent`]). [`Duration`](std::time::Duration) fields are represented as integer milliseconds, and [`MediaEvent`] is internally tagged with a `"type"` field. |
 //! | `tracing` | Enables diagnostic instrumentation via the [`tracing`](https://docs.rs/tracing) crate. When enabled, the library emits `debug`- and `warn`-level events for background task lifecycle, silently skipped errors, and platform-specific failures. Attach any [`tracing`](https://docs.rs/tracing) subscriber (e.g. [`tracing_subscriber`](https://docs.rs/tracing-subscriber)) in your application to consume these events. |
 
 #[macro_use]
