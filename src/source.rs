@@ -293,7 +293,7 @@ mod tests {
         let _builder = MediaSourceBuilder::default();
     }
 
-    // On macOS, MacOSMediaSource::new() only wraps AppleScriptProvider in an Arc — no I/O.
+    // On macOS, MacOSMediaSource::new() only wraps JxaProvider in an Arc — no I/O.
     // Linux and Windows require a live session bus / WinRT, so they are excluded.
     #[cfg(target_os = "macos")]
     #[tokio::test]

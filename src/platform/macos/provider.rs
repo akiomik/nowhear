@@ -41,9 +41,9 @@ pub struct AllPlayerStates {
 ///
 /// This provider uses JXA (JavaScript for Automation) via OSAKit to query Music.app and Spotify for their
 /// current playback state.
-pub struct AppleScriptProvider;
+pub struct JxaProvider;
 
-impl PlayerStateProvider for AppleScriptProvider {
+impl PlayerStateProvider for JxaProvider {
     async fn get_player_state(&self, player_name: &str) -> Result<Option<PlayerState>> {
         // Validate the name before spawning osascript so unknown players fail cheaply.
         if !matches!(player_name, "Music" | "Spotify") {
@@ -91,15 +91,11 @@ impl PlayerStateProvider for AppleScriptProvider {
         };
 
         let output = super::osa::execute(cache_key, source).await?;
-        let raw: AllAppleScriptStates = serde_json::from_str(&output)?;
+        let raw: AllJxaStates = serde_json::from_str(&output)?;
 
         Ok(AllPlayerStates {
-            music: raw
-                .music
-                .map(AppleScriptPlayerState::into_music_player_state),
-            spotify: raw
-                .spotify
-                .map(AppleScriptPlayerState::into_spotify_player_state),
+            music: raw.music.map(JxaPlayerState::into_music_player_state),
+            spotify: raw.spotify.map(JxaPlayerState::into_spotify_player_state),
         })
     }
 }
@@ -133,13 +129,13 @@ fn build_script(running: super::running::RunningPlayers) -> Option<(&'static str
 /// Each field is `None` when the corresponding player is not running or not
 /// currently playing.
 #[derive(Debug, Deserialize)]
-struct AllAppleScriptStates {
-    music: Option<AppleScriptPlayerState>,
-    spotify: Option<AppleScriptPlayerState>,
+struct AllJxaStates {
+    music: Option<JxaPlayerState>,
+    spotify: Option<JxaPlayerState>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-enum AppleScriptPlaybackState {
+enum JxaPlaybackState {
     #[serde(rename = "stopped")]
     Stopped,
     #[serde(rename = "playing")]
@@ -159,8 +155,8 @@ enum AppleScriptPlaybackState {
 /// layer and the internal [`PlayerState`] representation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct AppleScriptPlayerState {
-    player_state: AppleScriptPlaybackState,
+struct JxaPlayerState {
+    player_state: JxaPlaybackState,
     player_position: f64,
     sound_volume: usize,
     track_name: String,
@@ -172,11 +168,11 @@ struct AppleScriptPlayerState {
     track_duration: f64,
 }
 
-impl AppleScriptPlayerState {
+impl JxaPlayerState {
     pub const fn playback_state(&self) -> PlaybackState {
         match self.player_state {
-            AppleScriptPlaybackState::Paused => PlaybackState::Paused,
-            AppleScriptPlaybackState::Stopped => PlaybackState::Stopped,
+            JxaPlaybackState::Paused => PlaybackState::Paused,
+            JxaPlaybackState::Stopped => PlaybackState::Stopped,
             _ => PlaybackState::Playing,
         }
     }
@@ -319,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn test_all_applescript_states_deserialize() -> Result<()> {
+    fn test_all_jxa_states_deserialize() -> Result<()> {
         let json = r#"{
             "music": {
                 "playerState": "playing",
@@ -335,7 +331,7 @@ mod tests {
             "spotify": null
         }"#;
 
-        let states: AllAppleScriptStates = serde_json::from_str(json)?;
+        let states: AllJxaStates = serde_json::from_str(json)?;
 
         assert_eq!(
             states.music.map(|s| s.track_name),
@@ -347,10 +343,10 @@ mod tests {
     }
 
     #[test]
-    fn test_all_applescript_states_deserialize_both_null() -> Result<()> {
+    fn test_all_jxa_states_deserialize_both_null() -> Result<()> {
         let json = r#"{ "music": null, "spotify": null }"#;
 
-        let states: AllAppleScriptStates = serde_json::from_str(json)?;
+        let states: AllJxaStates = serde_json::from_str(json)?;
 
         assert_eq!(states.music, None);
         assert_eq!(states.spotify, None);
@@ -358,10 +354,10 @@ mod tests {
         Ok(())
     }
 
-    // AppleScriptPlayerState tests
+    // JxaPlayerState tests
 
     #[test]
-    fn test_applescript_player_state_deserialize_playing() -> Result<()> {
+    fn test_jxa_player_state_deserialize_playing() -> Result<()> {
         let json = r#"{
             "playerState": "playing",
             "playerPosition": 45.5,
@@ -374,12 +370,12 @@ mod tests {
             "trackDuration": 180.0
         }"#;
 
-        let state: AppleScriptPlayerState = serde_json::from_str(json)?;
+        let state: JxaPlayerState = serde_json::from_str(json)?;
 
         assert_eq!(
             state,
-            AppleScriptPlayerState {
-                player_state: AppleScriptPlaybackState::Playing,
+            JxaPlayerState {
+                player_state: JxaPlaybackState::Playing,
                 player_position: 45.5,
                 sound_volume: 80,
                 track_name: "Test Song".to_string(),
@@ -396,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn test_applescript_player_state_deserialize_paused() -> Result<()> {
+    fn test_jxa_player_state_deserialize_paused() -> Result<()> {
         let json = r#"{
             "playerState": "paused",
             "playerPosition": 30.0,
@@ -409,15 +405,15 @@ mod tests {
             "trackDuration": 200.0
         }"#;
 
-        let state: AppleScriptPlayerState = serde_json::from_str(json)?;
+        let state: JxaPlayerState = serde_json::from_str(json)?;
 
-        assert_eq!(state.player_state, AppleScriptPlaybackState::Paused);
+        assert_eq!(state.player_state, JxaPlaybackState::Paused);
 
         Ok(())
     }
 
     #[test]
-    fn test_applescript_player_state_deserialize_stopped() -> Result<()> {
+    fn test_jxa_player_state_deserialize_stopped() -> Result<()> {
         let json = r#"{
             "playerState": "stopped",
             "playerPosition": 0.0,
@@ -430,15 +426,15 @@ mod tests {
             "trackDuration": 150.0
         }"#;
 
-        let state: AppleScriptPlayerState = serde_json::from_str(json)?;
+        let state: JxaPlayerState = serde_json::from_str(json)?;
 
-        assert_eq!(state.player_state, AppleScriptPlaybackState::Stopped);
+        assert_eq!(state.player_state, JxaPlaybackState::Stopped);
 
         Ok(())
     }
 
     #[test]
-    fn test_applescript_player_state_deserialize_fast_forwarding() -> Result<()> {
+    fn test_jxa_player_state_deserialize_fast_forwarding() -> Result<()> {
         let json = r#"{
             "playerState": "fast forwarding",
             "playerPosition": 60.0,
@@ -451,15 +447,15 @@ mod tests {
             "trackDuration": 240.0
         }"#;
 
-        let state: AppleScriptPlayerState = serde_json::from_str(json)?;
+        let state: JxaPlayerState = serde_json::from_str(json)?;
 
-        assert_eq!(state.player_state, AppleScriptPlaybackState::FastForwarding);
+        assert_eq!(state.player_state, JxaPlaybackState::FastForwarding);
 
         Ok(())
     }
 
     #[test]
-    fn test_applescript_player_state_deserialize_rewinding() -> Result<()> {
+    fn test_jxa_player_state_deserialize_rewinding() -> Result<()> {
         let json = r#"{
             "playerState": "rewinding",
             "playerPosition": 20.0,
@@ -472,15 +468,15 @@ mod tests {
             "trackDuration": 210.0
         }"#;
 
-        let state: AppleScriptPlayerState = serde_json::from_str(json)?;
+        let state: JxaPlayerState = serde_json::from_str(json)?;
 
-        assert_eq!(state.player_state, AppleScriptPlaybackState::Rewinding);
+        assert_eq!(state.player_state, JxaPlaybackState::Rewinding);
 
         Ok(())
     }
 
     #[test]
-    fn test_applescript_player_state_deserialize_track_album_artwork_url() -> Result<()> {
+    fn test_jxa_player_state_deserialize_track_album_artwork_url() -> Result<()> {
         let json = r#"{
             "playerState": "playing",
             "playerPosition": 45.5,
@@ -494,12 +490,12 @@ mod tests {
             "trackDuration": 180.0
         }"#;
 
-        let state: AppleScriptPlayerState = serde_json::from_str(json)?;
+        let state: JxaPlayerState = serde_json::from_str(json)?;
 
         assert_eq!(
             state,
-            AppleScriptPlayerState {
-                player_state: AppleScriptPlaybackState::Playing,
+            JxaPlayerState {
+                player_state: JxaPlaybackState::Playing,
                 player_position: 45.5,
                 sound_volume: 80,
                 track_name: "Test Song".to_string(),
@@ -516,21 +512,18 @@ mod tests {
     }
 
     #[test]
-    fn test_applescript_playback_state_conversion() {
+    fn test_jxa_playback_state_conversion() {
         let test_cases = vec![
-            (AppleScriptPlaybackState::Playing, PlaybackState::Playing),
-            (AppleScriptPlaybackState::Paused, PlaybackState::Paused),
-            (AppleScriptPlaybackState::Stopped, PlaybackState::Stopped),
-            (
-                AppleScriptPlaybackState::FastForwarding,
-                PlaybackState::Playing,
-            ),
-            (AppleScriptPlaybackState::Rewinding, PlaybackState::Playing),
+            (JxaPlaybackState::Playing, PlaybackState::Playing),
+            (JxaPlaybackState::Paused, PlaybackState::Paused),
+            (JxaPlaybackState::Stopped, PlaybackState::Stopped),
+            (JxaPlaybackState::FastForwarding, PlaybackState::Playing),
+            (JxaPlaybackState::Rewinding, PlaybackState::Playing),
         ];
 
-        for (applescript_state, expected_state) in test_cases {
-            let state = AppleScriptPlayerState {
-                player_state: applescript_state,
+        for (jxa_state, expected_state) in test_cases {
+            let state = JxaPlayerState {
+                player_state: jxa_state,
                 player_position: 0.0,
                 sound_volume: 50,
                 track_name: "Test".to_string(),
@@ -547,9 +540,9 @@ mod tests {
     }
 
     #[test]
-    fn test_applescript_player_state_into_music_track() {
-        let state = AppleScriptPlayerState {
-            player_state: AppleScriptPlaybackState::Playing,
+    fn test_jxa_player_state_into_music_track() {
+        let state = JxaPlayerState {
+            player_state: JxaPlaybackState::Playing,
             player_position: 45.5,
             sound_volume: 80,
             track_name: "Bohemian Rhapsody".to_string(),
@@ -578,9 +571,9 @@ mod tests {
     }
 
     #[test]
-    fn test_applescript_player_state_into_spotify_track() {
-        let state = AppleScriptPlayerState {
-            player_state: AppleScriptPlaybackState::Playing,
+    fn test_jxa_player_state_into_spotify_track() {
+        let state = JxaPlayerState {
+            player_state: JxaPlaybackState::Playing,
             player_position: 30.0,
             sound_volume: 70,
             track_name: "Stairway to Heaven".to_string(),
@@ -609,9 +602,9 @@ mod tests {
     }
 
     #[test]
-    fn test_applescript_player_state_into_music_player_state() {
-        let state = AppleScriptPlayerState {
-            player_state: AppleScriptPlaybackState::Paused,
+    fn test_jxa_player_state_into_music_player_state() {
+        let state = JxaPlayerState {
+            player_state: JxaPlaybackState::Paused,
             player_position: 120.5,
             sound_volume: 75,
             track_name: "Test Track".to_string(),
@@ -645,9 +638,9 @@ mod tests {
     }
 
     #[test]
-    fn test_applescript_player_state_into_spotify_player_state() {
-        let state = AppleScriptPlayerState {
-            player_state: AppleScriptPlaybackState::Playing,
+    fn test_jxa_player_state_into_spotify_player_state() {
+        let state = JxaPlayerState {
+            player_state: JxaPlaybackState::Playing,
             player_position: 65.25,
             sound_volume: 85,
             track_name: "Spotify Track".to_string(),
@@ -681,10 +674,10 @@ mod tests {
     }
 
     #[test]
-    fn test_applescript_player_state_duration_difference() {
+    fn test_jxa_player_state_duration_difference() {
         // Music.app uses seconds for duration
-        let music_state = AppleScriptPlayerState {
-            player_state: AppleScriptPlaybackState::Playing,
+        let music_state = JxaPlayerState {
+            player_state: JxaPlaybackState::Playing,
             player_position: 0.0,
             sound_volume: 50,
             track_name: "Track".to_string(),
@@ -697,8 +690,8 @@ mod tests {
         };
 
         // Spotify uses milliseconds for duration
-        let spotify_state = AppleScriptPlayerState {
-            player_state: AppleScriptPlaybackState::Playing,
+        let spotify_state = JxaPlayerState {
+            player_state: JxaPlaybackState::Playing,
             player_position: 0.0,
             sound_volume: 50,
             track_name: "Track".to_string(),
@@ -722,11 +715,11 @@ mod tests {
     // Empty-string field handling in into_music_track / into_spotify_track
 
     #[test]
-    fn test_applescript_player_state_into_music_track_empty_fields() {
+    fn test_jxa_player_state_into_music_track_empty_fields() {
         // Empty strings for artist, album, album_artist, and art_url must map to the
         // "absent" representation (vec![] / None) rather than leaking empty strings.
-        let state = AppleScriptPlayerState {
-            player_state: AppleScriptPlaybackState::Playing,
+        let state = JxaPlayerState {
+            player_state: JxaPlaybackState::Playing,
             player_position: 0.0,
             sound_volume: 50,
             track_name: "Track".to_string(),
@@ -747,10 +740,10 @@ mod tests {
     }
 
     #[test]
-    fn test_applescript_player_state_into_spotify_track_empty_fields() {
+    fn test_jxa_player_state_into_spotify_track_empty_fields() {
         // Same empty-field contract for the Spotify variant.
-        let state = AppleScriptPlayerState {
-            player_state: AppleScriptPlaybackState::Playing,
+        let state = JxaPlayerState {
+            player_state: JxaPlaybackState::Playing,
             player_position: 0.0,
             sound_volume: 50,
             track_name: "Track".to_string(),
@@ -770,13 +763,13 @@ mod tests {
         assert_eq!(track.art_url, None);
     }
 
-    // AppleScriptProvider::get_player_state validates the player name before any OSA call
+    // JxaProvider::get_player_state validates the player name before any OSA call
 
     #[tokio::test]
-    async fn test_apple_script_provider_get_player_state_unknown_player() {
+    async fn test_jxa_provider_get_player_state_unknown_player() {
         use crate::MediaSourceError;
 
-        let provider = AppleScriptProvider;
+        let provider = JxaProvider;
         let result = provider.get_player_state("UnknownPlayer").await;
         assert_eq!(
             result,
