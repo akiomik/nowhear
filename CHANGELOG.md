@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Windows: `Track::art_url` is now populated. The thumbnail stream returned by Windows Media Control is read and inlined as a `data:<mime>;base64,<data>` URI; previously the code attempted to stringify the stream reference, which always failed and left `art_url` as `None`
+
 ## [0.4.0] - 2026-06-27
 
 ### Changed
