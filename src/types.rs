@@ -116,7 +116,10 @@ pub struct PlayerInfo {
     pub playback_state: PlaybackState,
     /// Current playback position within the track
     pub position: Option<Duration>,
-    /// Current volume level (0.0 to 1.0)
+    /// Current volume level, where `0.0` is muted and `1.0` is full volume.
+    ///
+    /// Values may exceed `1.0` on players that support over-amplification (the
+    /// MPRIS `Volume` property is not capped at `1.0`).
     pub volume: Option<f64>,
 }
 
@@ -210,7 +213,8 @@ pub enum MediaEvent {
     /// Volume changed.
     ///
     /// This event is emitted when the player's volume level changes.
-    /// The volume value is typically between 0.0 (muted) and 1.0 (maximum).
+    /// The volume value is `0.0` (muted) to `1.0` (full volume), and may exceed
+    /// `1.0` on players that support over-amplification (e.g. via MPRIS).
     VolumeChanged { player_name: String, volume: f64 },
 
     /// A new player appeared.
