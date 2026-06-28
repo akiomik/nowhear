@@ -1,8 +1,8 @@
 //! Platform-agnostic player-state snapshot and event diffing.
 //!
 //! This module has no platform dependencies. It models a single player's observable state
-//! ([`PlayerState`]) and turns successive reads of it into discrete [`MediaEvent`]s
-//! ([`diff_player_state`]). It is currently consumed only by the Windows backend — which reads a
+//! (`PlayerState`) and turns successive reads of it into discrete `MediaEvent`s
+//! (`diff_player_state`). It is currently consumed only by the Windows backend — which reads a
 //! player's full state on every change notification and diffs it against the previous read — but
 //! is kept platform-neutral so other backends can adopt it.
 

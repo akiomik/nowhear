@@ -45,6 +45,9 @@ fmt:
 doc-build:
   cargo doc --no-deps
 
+doc-check:
+  RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --document-private-items
+
 [macos]
 run-jxa:
   osascript -l JavaScript "src/platform/jxa/player_states.js"

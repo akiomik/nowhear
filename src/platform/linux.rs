@@ -33,7 +33,7 @@ use crate::types::PlayerInfo;
 /// # Note
 ///
 /// This type is visible for technical reasons but should not be used directly.
-/// Use [`nowhear::MediaSourceBuilder`] to create media sources, which will
+/// Use [`crate::source::MediaSourceBuilder`] to create media sources, which will
 /// automatically select this implementation on Linux systems.
 pub struct LinuxMediaSource<P: PlayerDiscoveryProvider = MprisProvider> {
     provider: Arc<P>,

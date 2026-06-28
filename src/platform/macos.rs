@@ -158,13 +158,13 @@ fn build_script(running: running::RunningPlayers) -> Option<(&'static str, Strin
 /// between responsiveness and system resource usage. Each poll runs a single
 /// JavaScript-for-Automation script that returns both Music.app and Spotify in
 /// one call. The script is executed in-process on a dedicated worker thread (see
-/// [`crate::platform::osa`]) instead of spawning an `osascript` subprocess per
+/// `osa`) instead of spawning an `osascript` subprocess per
 /// poll, which eliminates the per-poll `posix_spawn` cost.
 ///
 /// # Note
 ///
 /// This type is visible for technical reasons but should not be used directly.
-/// Use [`nowhear::MediaSourceBuilder`] to create media sources, which will
+/// Use [`crate::source::MediaSourceBuilder`] to create media sources, which will
 /// automatically select this implementation on macOS systems.
 pub struct MacOSMediaSource<P: PlayerStateProvider = AppleScriptProvider> {
     provider: Arc<P>,
