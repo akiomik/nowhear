@@ -4,7 +4,7 @@
 //! The appropriate module is compiled based on the target operating system:
 //!
 //! - `linux`: MPRIS D-Bus interface implementation
-//! - `macos`: AppleScript-based implementation
+//! - `macos`: JXA-based implementation
 //! - `windows`: Windows Media Control API implementation
 //!
 //! These modules are internal and not intended for direct use. Use the

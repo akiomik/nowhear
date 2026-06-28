@@ -18,7 +18,7 @@ use crate::platform::state::{PlayerState, diff_player_state};
 use crate::source::{EventStream, MediaSource};
 use crate::types::{MediaEvent, PlayerInfo};
 
-pub use provider::{AppleScriptProvider, PlayerStateProvider};
+pub use provider::{JxaProvider, PlayerStateProvider};
 
 /// macOS media source implementation using JXA (JavaScript for Automation) via OSAKit.
 ///
@@ -48,7 +48,7 @@ pub use provider::{AppleScriptProvider, PlayerStateProvider};
 /// This type is visible for technical reasons but should not be used directly.
 /// Use [`crate::source::MediaSourceBuilder`] to create media sources, which will
 /// automatically select this implementation on macOS systems.
-pub struct MacOSMediaSource<P: PlayerStateProvider = AppleScriptProvider> {
+pub struct MacOSMediaSource<P: PlayerStateProvider = JxaProvider> {
     provider: Arc<P>,
 }
 
@@ -119,13 +119,13 @@ impl PlayerMonitor {
     }
 }
 
-impl MacOSMediaSource<AppleScriptProvider> {
+impl MacOSMediaSource<JxaProvider> {
     /// Creates a new macOS media source.
     ///
     /// Note: This is an internal API. Use `MediaSourceBuilder` instead.
     pub fn new() -> Self {
         Self {
-            provider: Arc::new(AppleScriptProvider),
+            provider: Arc::new(JxaProvider),
         }
     }
 }
@@ -871,7 +871,7 @@ mod tests {
         assert_eq!(events, Vec::<MediaEvent>::new());
     }
 
-    // MacOSMediaSource::new() — wraps AppleScriptProvider in an Arc, no I/O
+    // MacOSMediaSource::new() — wraps JxaProvider in an Arc, no I/O
 
     #[test]
     fn test_macos_media_source_new() {
