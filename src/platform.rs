@@ -8,7 +8,7 @@
 //! - `windows`: Windows Media Control API implementation
 //!
 //! These modules are internal and not intended for direct use. Use the
-//! platform-agnostic [`nowhear::MediaWatcher`] trait and [`nowhear::MediaWatcherBuilder`]
+//! platform-agnostic [`crate::source::MediaSource`] trait and [`crate::source::MediaSourceBuilder`]
 //! instead.
 
 #[cfg(target_os = "linux")]

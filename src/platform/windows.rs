@@ -40,7 +40,7 @@ use provider::{MediaSessionProvider, WindowsMediaControlProvider};
 /// # Note
 ///
 /// This type is visible for technical reasons but should not be used directly.
-/// Use [`nowhear::MediaSourceBuilder`] to create media sources, which will
+/// Use [`crate::source::MediaSourceBuilder`] to create media sources, which will
 /// automatically select this implementation on Windows systems.
 pub struct WindowsMediaSource<P: MediaSessionProvider = WindowsMediaControlProvider> {
     provider: Arc<P>,
