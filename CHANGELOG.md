@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-29
+
 ### Added
 
 - `MediaSourceError::PermissionDenied` variant. On macOS, `get_player` now returns this instead of `InternalError` when the host application lacks Automation permission (the underlying Apple Event fails with `errAEEventNotPermitted`), so callers can detect the permission case and prompt the user. Note: adding an enum variant can break downstream code that matches `MediaSourceError` exhaustively without a wildcard arm
@@ -122,7 +124,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Windows: Windows Media Control API support
 - Two example applications: `basic` and `stream`
 
-[unreleased]: https://github.com/akiomik/nowhear/compare/v0.4.1...HEAD
+[unreleased]: https://github.com/akiomik/nowhear/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/akiomik/nowhear/releases/tag/v0.5.0
 [0.4.1]: https://github.com/akiomik/nowhear/releases/tag/v0.4.1
 [0.4.0]: https://github.com/akiomik/nowhear/releases/tag/v0.4.0
 [0.3.1]: https://github.com/akiomik/nowhear/releases/tag/v0.3.1
