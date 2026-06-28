@@ -5,6 +5,58 @@
 
 use std::time::Duration;
 
+/// `serde` (de)serialization for a required [`Duration`] as integer milliseconds.
+///
+/// Kept separate from [`duration_millis_opt`] because `#[serde(with = ...)]` must match the
+/// exact field type, and the optional variant cannot be reused for a bare `Duration`.
+#[cfg(feature = "serde")]
+mod duration_millis {
+    use std::time::Duration;
+
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(value: &Duration, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Tracks never run long enough to overflow u64 milliseconds; saturate defensively.
+        serializer.serialize_u64(u64::try_from(value.as_millis()).unwrap_or(u64::MAX))
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        u64::deserialize(deserializer).map(Duration::from_millis)
+    }
+}
+
+/// `serde` (de)serialization for an optional [`Duration`] as integer milliseconds (or `null`).
+#[cfg(feature = "serde")]
+mod duration_millis_opt {
+    use std::time::Duration;
+
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    #[allow(clippy::ref_option)]
+    pub fn serialize<S>(value: &Option<Duration>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(d) => serializer.serialize_some(&u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(Option::<u64>::deserialize(deserializer)?.map(Duration::from_millis))
+    }
+}
+
 /// Represents a media track with metadata.
 ///
 /// This structure contains all available metadata about a track, including basic
@@ -28,6 +80,7 @@ use std::time::Duration;
 /// };
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Track {
     /// Track title
     pub title: String,
@@ -39,7 +92,8 @@ pub struct Track {
     pub album_artist: Vec<String>,
     /// Track number in the album
     pub track_number: Option<u32>,
-    /// Total duration of the track
+    /// Total duration of the track, serialized as integer milliseconds.
+    #[cfg_attr(feature = "serde", serde(with = "duration_millis_opt"))]
     pub duration: Option<Duration>,
     /// URI of the album artwork, if available.
     ///
@@ -73,6 +127,7 @@ impl Track {
 /// Represents the current playback state of a media player. This is used in
 /// both [`PlayerInfo`] and [`MediaEvent::StateChanged`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum PlaybackState {
     /// Media is currently playing.
     Playing,
@@ -107,6 +162,7 @@ pub enum PlaybackState {
 /// # }
 /// ```
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PlayerInfo {
     /// Name or identifier of the player
     pub player_name: String,
@@ -114,7 +170,8 @@ pub struct PlayerInfo {
     pub current_track: Option<Track>,
     /// Current playback state (playing, paused, or stopped)
     pub playback_state: PlaybackState,
-    /// Current playback position within the track
+    /// Current playback position within the track, serialized as integer milliseconds.
+    #[cfg_attr(feature = "serde", serde(with = "duration_millis_opt"))]
     pub position: Option<Duration>,
     /// Current volume level, where `0.0` is muted and `1.0` is full volume.
     ///
@@ -186,6 +243,8 @@ impl PlayerInfo {
 /// # }
 /// ```
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(tag = "type"))]
 pub enum MediaEvent {
     /// A new track started playing.
     ///
@@ -207,6 +266,7 @@ pub enum MediaEvent {
     /// position changes (typically > 2 seconds).
     PositionChanged {
         player_name: String,
+        #[cfg_attr(feature = "serde", serde(with = "duration_millis"))]
         position: Duration,
     },
 
@@ -227,4 +287,87 @@ pub enum MediaEvent {
     ///
     /// This event is emitted when a media player stops or becomes unavailable.
     PlayerRemoved { player_name: String },
+}
+
+/// Tests that lock the public 1.0 serde wire format. Changing any assertion here is a
+/// breaking change for consumers that persist or exchange the JSON representation.
+#[cfg(all(test, feature = "serde"))]
+mod serde_tests {
+    use super::*;
+
+    use serde_json::json;
+
+    fn sample_track() -> Track {
+        Track {
+            title: "Bohemian Rhapsody".to_string(),
+            artist: vec!["Queen".to_string()],
+            album: Some("A Night at the Opera".to_string()),
+            album_artist: vec!["Queen".to_string()],
+            track_number: Some(11),
+            duration: Some(Duration::from_secs(354)),
+            art_url: Some("https://example.com/art.jpg".to_string()),
+        }
+    }
+
+    #[test]
+    fn track_serializes_duration_as_integer_millis() {
+        let value = serde_json::to_value(sample_track()).expect("track serializes");
+        assert_eq!(value["duration"], json!(354_000));
+    }
+
+    #[test]
+    fn track_omitting_duration_serializes_null() {
+        let track = Track::unknown();
+        let value = serde_json::to_value(track).expect("track serializes");
+        assert_eq!(value["duration"], json!(null));
+        assert_eq!(value["art_url"], json!(null));
+    }
+
+    #[test]
+    fn track_round_trips() {
+        let track = sample_track();
+        let json = serde_json::to_string(&track).expect("track serializes");
+        let back: Track = serde_json::from_str(&json).expect("track deserializes");
+        assert_eq!(track, back);
+    }
+
+    #[test]
+    fn playback_state_serializes_as_pascal_case() {
+        let value = serde_json::to_value(PlaybackState::Playing).expect("state serializes");
+        assert_eq!(value, json!("Playing"));
+    }
+
+    #[test]
+    fn media_event_is_internally_tagged() {
+        let event = MediaEvent::StateChanged {
+            player_name: "spotify".to_string(),
+            state: PlaybackState::Playing,
+        };
+        let value = serde_json::to_value(event).expect("event serializes");
+        assert_eq!(value["type"], json!("StateChanged"));
+        assert_eq!(value["player_name"], json!("spotify"));
+        assert_eq!(value["state"], json!("Playing"));
+    }
+
+    #[test]
+    fn media_event_position_serializes_as_integer_millis() {
+        let event = MediaEvent::PositionChanged {
+            player_name: "spotify".to_string(),
+            position: Duration::from_secs(12),
+        };
+        let value = serde_json::to_value(event).expect("event serializes");
+        assert_eq!(value["type"], json!("PositionChanged"));
+        assert_eq!(value["position"], json!(12_000));
+    }
+
+    #[test]
+    fn media_event_round_trips() {
+        let event = MediaEvent::TrackChanged {
+            player_name: "spotify".to_string(),
+            track: sample_track(),
+        };
+        let json = serde_json::to_string(&event).expect("event serializes");
+        let back: MediaEvent = serde_json::from_str(&json).expect("event deserializes");
+        assert_eq!(event, back);
+    }
 }

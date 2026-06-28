@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `MediaSourceError::PermissionDenied` variant. On macOS, `get_player` now returns this instead of `InternalError` when the host application lacks Automation permission (the underlying Apple Event fails with `errAEEventNotPermitted`), so callers can detect the permission case and prompt the user. Note: adding an enum variant can break downstream code that matches `MediaSourceError` exhaustively without a wildcard arm
+- Optional `serde` feature: derives `Serialize` and `Deserialize` for the public data types (`Track`, `PlaybackState`, `PlayerInfo`, and `MediaEvent`). `Duration` fields (`Track::duration`, `PlayerInfo::position`, and `MediaEvent::PositionChanged::position`) are represented as integer milliseconds, and `MediaEvent` is internally tagged with a `"type"` field
 
 ### Changed
 
