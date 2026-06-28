@@ -8,7 +8,7 @@
 //! ## Platform Support
 //!
 //! - **Linux**: Uses MPRIS D-Bus interface
-//! - **macOS**: Uses AppleScript to query Music.app and Spotify
+//! - **macOS**: Uses JXA (JavaScript for Automation) via OSAKit to query Music.app and Spotify
 //! - **Windows**: Uses Windows Media Control API (`GlobalSystemMediaTransportControlsSessionManager`)
 //!
 //! ## Basic Usage
@@ -35,10 +35,13 @@
 //! #[tokio::main]
 //! async fn main() -> Result<()> {
 //!     let source = MediaSourceBuilder::new().build().await?;
-//!     let player_info = source.get_player("spotify").await?;
+//!     let players = source.list_players().await?;
 //!
-//!     if let Some(track) = player_info.current_track {
-//!         println!("Now playing: {} by {}", track.title, track.artist.join(", "));
+//!     if let Some(player_name) = players.first() {
+//!         let player_info = source.get_player(player_name).await?;
+//!         if let Some(track) = player_info.current_track {
+//!             println!("Now playing: {} by {}", track.title, track.artist.join(", "));
+//!         }
 //!     }
 //!
 //!     Ok(())

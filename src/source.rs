@@ -141,7 +141,7 @@ enum PlatformMediaSourceInner {
 /// # Platform Implementations
 ///
 /// - **Linux**: Uses MPRIS D-Bus interface to communicate with media players
-/// - **macOS**: Uses AppleScript to query Music.app and Spotify
+/// - **macOS**: Uses JXA (JavaScript for Automation) via OSAKit to query Music.app and Spotify
 /// - **Windows**: Uses Windows Media Control API (`GlobalSystemMediaTransportControlsSessionManager`)
 ///
 /// # Examples
