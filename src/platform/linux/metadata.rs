@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use zbus::zvariant::{Dict, Value};
 
-use crate::{MediaSourceError, Result, Track};
+use crate::{Artwork, MediaSourceError, Result, Track};
 
 /// Internal representation of MPRIS metadata.
 ///
@@ -124,7 +124,7 @@ impl From<MprisMetadata> for Track {
         track.album_artist = metadata.album_artist;
         track.track_number = metadata.track_number.and_then(|num| num.try_into().ok());
         track.duration = metadata.length.map(Duration::from_micros);
-        track.art_url = metadata.art_url;
+        track.artwork = metadata.art_url.map(|url| Artwork::Url { url });
 
         track
     }
@@ -340,7 +340,9 @@ mod tests {
                 album_artist: vec!["Album Artist".to_string()],
                 track_number: Some(5),
                 duration: Some(Duration::from_mins(3)),
-                art_url: Some("file:///path/to/art.jpg".to_string()),
+                artwork: Some(Artwork::Url {
+                    url: "file:///path/to/art.jpg".to_string(),
+                }),
             }
         );
     }

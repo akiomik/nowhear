@@ -538,7 +538,7 @@ impl EventDrivenPlayerMonitor {
 
         let events = diff_player_state(id, self.cache.get(id), &state);
         // Always refresh the cache, even when nothing is emitted, so late-loading metadata
-        // (duration, art_url) is retained without surfacing a spurious TrackChanged.
+        // (duration, artwork) is retained without surfacing a spurious TrackChanged.
         self.cache.insert(id.to_string(), state);
 
         for event in events {

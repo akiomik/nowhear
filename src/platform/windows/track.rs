@@ -1,15 +1,14 @@
 //! Track and time-value conversions from Windows Media Control data.
 
+use std::sync::Arc;
 use std::time::Duration;
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use futures::executor::block_on;
 use windows::Media::Control::GlobalSystemMediaTransportControlsSessionMediaProperties as WinMediaProperties;
 use windows::Storage::Streams::{DataReader, IRandomAccessStreamReference};
 use windows::core::Error as WindowsError;
 
-use crate::types::Track;
+use crate::types::{Artwork, Track};
 
 pub(super) fn build_track(media_props: &WinMediaProperties, duration: Option<Duration>) -> Track {
     let title = media_props.Title().unwrap_or_default().to_string();
@@ -30,11 +29,11 @@ pub(super) fn build_track(media_props: &WinMediaProperties, duration: Option<Dur
         .ok()
         .and_then(|n| u32::try_from(n).ok());
 
-    let art_url = media_props
+    let artwork = media_props
         .Thumbnail()
         .ok()
         .and_then(|thumb| Thumbnail::try_from(thumb).ok())
-        .and_then(Thumbnail::into_art_url);
+        .and_then(Thumbnail::into_artwork);
 
     Track {
         title: if title.is_empty() {
@@ -47,7 +46,7 @@ pub(super) fn build_track(media_props: &WinMediaProperties, duration: Option<Dur
         album_artist: vec![],
         track_number,
         duration,
-        art_url,
+        artwork,
     }
 }
 
@@ -55,35 +54,32 @@ pub(super) fn build_track(media_props: &WinMediaProperties, duration: Option<Dur
 /// content type.
 ///
 /// Windows SMTC exposes artwork as an [`IRandomAccessStreamReference`] over binary image data, not
-/// as a URL like Linux (MPRIS) and macOS do. Reading is separated from encoding so that the read
-/// (`TryFrom`, which touches WinRT) and the `data:` URI formatting ([`into_art_url`]) can be
+/// as a URL like Linux (MPRIS) and macOS do. Reading is separated from conversion so that the read
+/// (`TryFrom`, which touches WinRT) and the [`Artwork`] construction ([`into_artwork`]) can be
 /// reasoned about — and tested — independently.
 ///
-/// [`into_art_url`]: Self::into_art_url
+/// [`into_artwork`]: Self::into_artwork
 struct Thumbnail {
     data: Vec<u8>,
     content_type: Option<String>,
 }
 
 impl Thumbnail {
-    /// MIME type used when the thumbnail stream does not report a content type.
-    const DEFAULT_MIME: &str = "application/octet-stream";
-
-    /// Converts the thumbnail into a [`Track::art_url`](crate::types::Track::art_url) value: a
-    /// `data:<mime>;base64,<data>` URI that consumers can render the same way they would a normal
-    /// URL.
+    /// Converts the thumbnail into an [`Artwork::Bytes`] value carrying the raw image bytes and the
+    /// reported MIME type (if any).
     ///
-    /// Falls back to [`Self::DEFAULT_MIME`] when no content type was reported. Returns `None` when
-    /// there are no bytes, so an empty thumbnail surfaces as an absent `art_url`.
-    fn into_art_url(self) -> Option<String> {
+    /// Returns `None` when there are no bytes, so an empty thumbnail surfaces as absent artwork.
+    /// The bytes are not base64-encoded here; that cost is deferred to [`Artwork::to_uri`] (or
+    /// `serde`) so an unread thumbnail never pays for encoding.
+    fn into_artwork(self) -> Option<Artwork> {
         if self.data.is_empty() {
             return None;
         }
 
-        let mime = self
-            .content_type
-            .unwrap_or_else(|| Self::DEFAULT_MIME.to_string());
-        Some(format!("data:{mime};base64,{}", BASE64.encode(self.data)))
+        Some(Artwork::Bytes {
+            mime: self.content_type,
+            data: Arc::from(self.data),
+        })
     }
 }
 
@@ -158,34 +154,39 @@ mod tests {
     }
 
     #[test]
-    fn test_into_art_url_with_content_type() {
-        // "Hi" encodes to "SGk=" in standard base64.
+    fn test_into_artwork_with_content_type() {
         assert_eq!(
-            thumbnail(b"Hi", Some("image/jpeg")).into_art_url(),
-            Some("data:image/jpeg;base64,SGk=".to_string())
+            thumbnail(b"Hi", Some("image/jpeg")).into_artwork(),
+            Some(Artwork::Bytes {
+                mime: Some("image/jpeg".to_string()),
+                data: Arc::from(b"Hi".as_slice()),
+            })
         );
     }
 
     #[test]
-    fn test_into_art_url_without_content_type_falls_back() {
+    fn test_into_artwork_without_content_type_has_no_mime() {
         assert_eq!(
-            thumbnail(b"Hi", None).into_art_url(),
-            Some(format!("data:{};base64,SGk=", Thumbnail::DEFAULT_MIME))
+            thumbnail(b"Hi", None).into_artwork(),
+            Some(Artwork::Bytes {
+                mime: None,
+                data: Arc::from(b"Hi".as_slice()),
+            })
         );
     }
 
     #[test]
-    fn test_into_art_url_empty_data_is_none() {
-        assert_eq!(thumbnail(b"", Some("image/png")).into_art_url(), None);
+    fn test_into_artwork_empty_data_is_none() {
+        assert_eq!(thumbnail(b"", Some("image/png")).into_artwork(), None);
     }
 
     #[test]
-    fn test_into_art_url_is_deterministic() {
-        // The same bytes must always produce the same URI so the state differ does not report a
+    fn test_into_artwork_is_deterministic() {
+        // The same bytes must always produce equal artwork so the state differ does not report a
         // spurious TrackChanged for an unchanged track.
         assert_eq!(
-            thumbnail(b"\x00\x01\x02\x03", Some("image/png")).into_art_url(),
-            thumbnail(b"\x00\x01\x02\x03", Some("image/png")).into_art_url()
+            thumbnail(b"\x00\x01\x02\x03", Some("image/png")).into_artwork(),
+            thumbnail(b"\x00\x01\x02\x03", Some("image/png")).into_artwork()
         );
     }
 

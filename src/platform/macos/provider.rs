@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{MediaSourceError, Result};
 use crate::platform::state::PlayerState;
-use crate::types::{PlaybackState, Track};
+use crate::types::{Artwork, PlaybackState, Track};
 
 /// Internal trait for abstracting player state retrieval.
 ///
@@ -197,7 +197,10 @@ impl JxaPlayerState {
             },
             track_number: Some(self.track_number),
             duration: Some(Duration::from_secs_f64(self.track_duration)),
-            art_url: self.track_album_artwork_url.filter(|s| !s.is_empty()),
+            artwork: self
+                .track_album_artwork_url
+                .filter(|s| !s.is_empty())
+                .map(|url| Artwork::Url { url }),
         }
     }
 
@@ -223,7 +226,10 @@ impl JxaPlayerState {
             },
             track_number: Some(self.track_number),
             duration: Some(Duration::from_millis(self.track_duration as u64)),
-            art_url: self.track_album_artwork_url.filter(|s| !s.is_empty()),
+            artwork: self
+                .track_album_artwork_url
+                .filter(|s| !s.is_empty())
+                .map(|url| Artwork::Url { url }),
         }
     }
 
@@ -565,7 +571,7 @@ mod tests {
                 album_artist: vec!["Queen".to_string()],
                 track_number: Some(11),
                 duration: Some(Duration::from_secs_f64(354.0)),
-                art_url: None,
+                artwork: None,
             }
         );
     }
@@ -596,7 +602,9 @@ mod tests {
                 album_artist: vec!["Led Zeppelin".to_string()],
                 track_number: Some(4),
                 duration: Some(Duration::from_secs(482)),
-                art_url: Some("https://example.com/image/deadbeef".to_owned()),
+                artwork: Some(Artwork::Url {
+                    url: "https://example.com/image/deadbeef".to_owned(),
+                }),
             }
         );
     }
@@ -628,7 +636,7 @@ mod tests {
                     album_artist: vec!["Test Album Artist".to_string()],
                     track_number: Some(2),
                     duration: Some(Duration::from_secs_f64(240.0)),
-                    art_url: None,
+                    artwork: None,
                 },
                 playback_state: PlaybackState::Paused,
                 position: Some(Duration::from_secs_f64(120.5)),
@@ -664,7 +672,9 @@ mod tests {
                     album_artist: vec!["Spotify Album Artist".to_string()],
                     track_number: Some(7),
                     duration: Some(Duration::from_secs(195)),
-                    art_url: Some("https://example.com/image/deadbeef".to_owned()),
+                    artwork: Some(Artwork::Url {
+                        url: "https://example.com/image/deadbeef".to_owned(),
+                    }),
                 },
                 playback_state: PlaybackState::Playing,
                 position: Some(Duration::from_secs_f64(65.25)),
@@ -716,7 +726,7 @@ mod tests {
 
     #[test]
     fn test_jxa_player_state_into_music_track_empty_fields() {
-        // Empty strings for artist, album, album_artist, and art_url must map to the
+        // Empty strings for artist, album, album_artist, and artwork must map to the
         // "absent" representation (vec![] / None) rather than leaking empty strings.
         let state = JxaPlayerState {
             player_state: JxaPlaybackState::Playing,
@@ -736,7 +746,7 @@ mod tests {
         assert_eq!(track.artist, Vec::<String>::new());
         assert_eq!(track.album, None);
         assert_eq!(track.album_artist, Vec::<String>::new());
-        assert_eq!(track.art_url, None);
+        assert_eq!(track.artwork, None);
     }
 
     #[test]
@@ -760,7 +770,7 @@ mod tests {
         assert_eq!(track.artist, Vec::<String>::new());
         assert_eq!(track.album, None);
         assert_eq!(track.album_artist, Vec::<String>::new());
-        assert_eq!(track.art_url, None);
+        assert_eq!(track.artwork, None);
     }
 
     // JxaProvider::get_player_state validates the player name before any OSA call

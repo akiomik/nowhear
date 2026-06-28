@@ -10,10 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `MediaSourceError::PermissionDenied` variant. On macOS, `get_player` now returns this instead of `InternalError` when the host application lacks Automation permission (the underlying Apple Event fails with `errAEEventNotPermitted`), so callers can detect the permission case and prompt the user. Note: adding an enum variant can break downstream code that matches `MediaSourceError` exhaustively without a wildcard arm
-- Optional `serde` feature: derives `Serialize` and `Deserialize` for the public data types (`Track`, `PlaybackState`, `PlayerInfo`, and `MediaEvent`). `Duration` fields (`Track::duration`, `PlayerInfo::position`, and `MediaEvent::PositionChanged::position`) are represented as integer milliseconds, and `MediaEvent` is internally tagged with a `"type"` field
+- Optional `serde` feature: derives `Serialize` and `Deserialize` for the public data types (`Track`, `Artwork`, `PlaybackState`, `PlayerInfo`, and `MediaEvent`). `Duration` fields (`Track::duration`, `PlayerInfo::position`, and `MediaEvent::PositionChanged::position`) are represented as integer milliseconds; `Artwork` and `MediaEvent` are internally tagged with a `"type"` field; and `Artwork::Bytes` image data is base64-encoded
+- `Artwork` enum modeling album artwork as either a URI (`Artwork::Url`, used by Linux and macOS) or raw image bytes (`Artwork::Bytes`, used by Windows). It provides `as_url`, `as_bytes`, `mime`, and an infallible `to_uri` that returns a directly renderable string (the URL as-is, or a freshly built `data:<mime>;base64,…` URI). The bytes are held in an `Arc<[u8]>` so cloning a `Track` does not copy the image
 
 ### Changed
 
+- **BREAKING**: `Track::art_url: Option<String>` is replaced by `Track::artwork: Option<Artwork>`. Previously the Windows backend eagerly base64-encoded every thumbnail into a `data:` URI string; it now carries the raw bytes and only encodes on demand via `Artwork::to_uri`. Consumers that relied on the artwork always being a string should call `Artwork::to_uri()`
 - **BREAKING**: `MediaSourceError` is now `#[non_exhaustive]`, so downstream `match` expressions on it must include a wildcard (`_`) arm. This is a one-time break that lets new variants be added in future releases without further breaking changes
 
 ## [0.4.1] - 2026-06-28
