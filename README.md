@@ -39,7 +39,7 @@ futures = "0.3"
 
 | Feature | Description |
 |---------|-------------|
-| `serde` | Derives `Serialize` and `Deserialize` for the public data types (`Track`, `PlaybackState`, `PlayerInfo`, and `MediaEvent`). `Duration` fields are represented as integer milliseconds, and `MediaEvent` is internally tagged with a `"type"` field. |
+| `serde` | Derives `Serialize` and `Deserialize` for the public data types (`Track`, `Artwork`, `PlaybackState`, `PlayerInfo`, and `MediaEvent`). `Duration` fields are represented as integer milliseconds, `Artwork` and `MediaEvent` are internally tagged with a `"type"` field, and `Artwork::Bytes` image data is base64-encoded. |
 | `tracing` | Enables diagnostic instrumentation via the [`tracing`](https://docs.rs/tracing) crate. |
 
 Enable a feature in your `Cargo.toml`:
@@ -172,9 +172,19 @@ pub struct Track {
     pub album_artist: Vec<String>,
     pub track_number: Option<u32>,
     pub duration: Option<Duration>,
-    pub art_url: Option<String>,
+    pub artwork: Option<Artwork>,
+}
+
+pub enum Artwork {
+    /// Artwork available at a URI (Linux/macOS).
+    Url { url: String },
+    /// Raw image bytes (Windows thumbnails).
+    Bytes { mime: Option<String>, data: Arc<[u8]> },
 }
 ```
+
+`Artwork::to_uri()` returns a directly renderable string for either form (the
+URL as-is, or a freshly built `data:<mime>;base64,…` URI for bytes).
 
 ## Examples
 

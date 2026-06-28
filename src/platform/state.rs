@@ -24,7 +24,7 @@ pub struct PlayerState {
 
 /// Returns `true` when title or artist differs, indicating a genuine track change.
 ///
-/// `Duration`, `art_url`, `track_number`, and `album` are metadata that can be updated late
+/// `Duration`, `artwork`, `track_number`, and `album` are metadata that can be updated late
 /// (e.g., a browser loading `EndTime` or album art after buffering) without the song changing.
 /// Comparing only `title` and `artist` prevents spurious `TrackChanged` events from those
 /// late-loading metadata updates.
@@ -109,6 +109,8 @@ pub fn diff_player_state(
 mod tests {
     use super::*;
 
+    use crate::types::Artwork;
+
     fn create_test_track_for_windows(title: &str) -> Track {
         Track {
             title: title.to_string(),
@@ -117,7 +119,7 @@ mod tests {
             album_artist: vec![],
             track_number: None,
             duration: Some(Duration::from_mins(3)),
-            art_url: None,
+            artwork: None,
         }
     }
 
@@ -146,7 +148,9 @@ mod tests {
         let track = create_test_track_for_windows("Song");
         let mut updated = track.clone();
         updated.duration = Some(Duration::from_mins(5)); // duration changed
-        updated.art_url = Some("http://example.com/art.jpg".to_string());
+        updated.artwork = Some(Artwork::Url {
+            url: "http://example.com/art.jpg".to_string(),
+        });
         assert!(!track_identity_changed(Some(&track), &updated));
     }
 
@@ -269,7 +273,9 @@ mod tests {
         let mut new = old.clone();
         // Late-loading metadata only: album/art change, identity (title+artist) stays.
         new.track.album = Some("Different Album".to_string());
-        new.track.art_url = Some("http://example.com/a.jpg".to_string());
+        new.track.artwork = Some(Artwork::Url {
+            url: "http://example.com/a.jpg".to_string(),
+        });
         let events = diff_player_state("p", Some(&old), &new);
         assert_eq!(events, Vec::<MediaEvent>::new());
     }

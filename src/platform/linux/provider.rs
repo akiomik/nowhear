@@ -571,7 +571,7 @@ mod tests {
                         album_artist: vec![],
                         track_number: None,
                         duration: None,
-                        art_url: None,
+                        artwork: None,
                     }
                 },
                 MediaEvent::VolumeChanged {

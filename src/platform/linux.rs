@@ -141,7 +141,7 @@ mod tests {
             album_artist: vec![],
             track_number: None,
             duration: Some(Duration::from_mins(3)),
-            art_url: None,
+            artwork: None,
         }
     }
 
