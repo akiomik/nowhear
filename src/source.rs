@@ -80,6 +80,8 @@ pub trait MediaSource: Send + Sync {
     /// # Errors
     ///
     /// Returns `MediaSourceError::PlayerNotFound` if the player is not running.
+    /// On macOS, returns `MediaSourceError::PermissionDenied` if the host
+    /// application has not been granted Automation permission.
     ///
     /// # Examples
     ///

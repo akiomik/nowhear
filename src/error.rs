@@ -8,11 +8,24 @@ use std::result;
 use thiserror::Error;
 
 /// Errors that can occur when using the media source.
+///
+/// This enum is marked `#[non_exhaustive]`, so new variants may be added in a
+/// future minor release without a breaking change. Match with a wildcard arm
+/// (`_ => ...`) to remain forward compatible.
 #[derive(Clone, Error, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MediaSourceError {
     /// The requested player was not found or is not currently running.
     #[error("Player not found: {0}")]
     PlayerNotFound(String),
+
+    /// The host application is not authorized to control the media player.
+    ///
+    /// On macOS this is reported when the Automation (Apple Events) permission
+    /// has not been granted to the host application. The user must grant it in
+    /// System Settings → Privacy & Security → Automation.
+    #[error("Permission denied: {0}")]
+    PermissionDenied(String),
 
     /// Failed to connect to the underlying media service.
     #[error("Failed to connect to media service: {0}")]
@@ -85,6 +98,12 @@ mod tests {
     fn test_player_not_found_display() {
         let err = MediaSourceError::PlayerNotFound("spotify".to_string());
         assert_eq!(err.to_string(), "Player not found: spotify");
+    }
+
+    #[test]
+    fn test_permission_denied_display() {
+        let err = MediaSourceError::PermissionDenied("not authorized".to_string());
+        assert_eq!(err.to_string(), "Permission denied: not authorized");
     }
 
     #[test]
