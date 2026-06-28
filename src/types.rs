@@ -41,7 +41,12 @@ pub struct Track {
     pub track_number: Option<u32>,
     /// Total duration of the track
     pub duration: Option<Duration>,
-    /// URL or path to the album artwork
+    /// URI of the album artwork, if available.
+    ///
+    /// This is always a URI rather than a bare filesystem path. Depending on the
+    /// platform and player it may be an `http(s):`, `file:`, or `data:` URI — for
+    /// example, the Windows backend inlines the thumbnail bytes as a
+    /// `data:<mime>;base64,<data>` URI.
     pub art_url: Option<String>,
 }
 
