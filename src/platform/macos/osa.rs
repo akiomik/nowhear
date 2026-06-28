@@ -165,10 +165,7 @@ impl OsaScript {
             // NSAppleEventDescriptor *desc = [s executeAndReturnError:&err];
             let desc: *mut AnyObject = msg_send![&*self.script, executeAndReturnError: &mut err];
             if desc.is_null() {
-                return Err(MediaSourceError::InternalError(format!(
-                    "OSA script execution failed: {}",
-                    error_message(err)
-                )));
+                return Err(execution_error(error_message(err), error_number(err)));
             }
 
             let value: *mut AnyObject = msg_send![desc, stringValue];
@@ -182,6 +179,44 @@ impl OsaScript {
             Ok(value.to_string())
         }
     }
+}
+
+/// Apple Event error code returned when the host application is not authorized
+/// to send Apple Events to the target application (Automation permission denied).
+///
+/// `errAEEventNotPermitted` from `<CarbonCore/MacErrors.h>`.
+const ERR_AE_EVENT_NOT_PERMITTED: i64 = -1743;
+
+/// Maps an OSA execution failure to a [`MediaSourceError`].
+///
+/// The Automation-permission-denied case (`errAEEventNotPermitted`) is surfaced
+/// as [`MediaSourceError::PermissionDenied`] so callers can prompt the user to
+/// grant access; every other failure stays an [`MediaSourceError::InternalError`].
+fn execution_error(message: String, number: Option<i64>) -> MediaSourceError {
+    if number == Some(ERR_AE_EVENT_NOT_PERMITTED) {
+        MediaSourceError::PermissionDenied(message)
+    } else {
+        MediaSourceError::InternalError(format!("OSA script execution failed: {message}"))
+    }
+}
+
+/// Best-effort extraction of the error code from an OSA error dict.
+///
+/// `err` is the `NSDictionary*` populated by `executeAndReturnError:`. Returns
+/// `None` when no `OSAScriptErrorNumber` entry is present.
+unsafe fn error_number(err: *mut AnyObject) -> Option<i64> {
+    if err.is_null() {
+        return None;
+    }
+
+    let key = NSString::from_str("OSAScriptErrorNumber");
+    let number: *mut AnyObject = unsafe { msg_send![err, objectForKey: &*key] };
+    if number.is_null() {
+        return None;
+    }
+
+    // `OSAScriptErrorNumber` is an `NSNumber`; read it as a `long long`.
+    Some(unsafe { msg_send![number, longLongValue] })
 }
 
 /// Best-effort extraction of a human-readable message from an OSA error dict.
@@ -215,6 +250,44 @@ mod tests {
         // dereference the null pointer and must return a human-readable fallback.
         let msg = unsafe { error_message(ptr::null_mut()) };
         assert_eq!(msg, "(no error information)");
+    }
+
+    // error_number ------------------------------------------------------------
+
+    #[test]
+    fn test_error_number_null_returns_none() {
+        // A null error dict must not be dereferenced and yields no error code.
+        assert_eq!(unsafe { error_number(ptr::null_mut()) }, None);
+    }
+
+    // execution_error ---------------------------------------------------------
+
+    #[test]
+    fn test_execution_error_permission_denied() {
+        // errAEEventNotPermitted must map to PermissionDenied so callers can
+        // detect the Automation-permission case and guide the user.
+        let err = execution_error(
+            "not authorized".to_string(),
+            Some(ERR_AE_EVENT_NOT_PERMITTED),
+        );
+        assert_eq!(
+            err,
+            MediaSourceError::PermissionDenied("not authorized".to_string())
+        );
+    }
+
+    #[test]
+    fn test_execution_error_other_code_is_internal() {
+        // Any other error code stays an InternalError.
+        let err = execution_error("boom".to_string(), Some(-1728));
+        assert!(matches!(err, MediaSourceError::InternalError(_)));
+    }
+
+    #[test]
+    fn test_execution_error_missing_code_is_internal() {
+        // A missing error code also falls back to InternalError.
+        let err = execution_error("boom".to_string(), None);
+        assert!(matches!(err, MediaSourceError::InternalError(_)));
     }
 
     // OsaScript::compile ------------------------------------------------------
