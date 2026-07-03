@@ -21,14 +21,15 @@
 //! (`String`, `Result`) cross the channel boundary.
 
 use std::collections::HashMap;
+use std::ffi::CStr;
 use std::ptr;
 use std::sync::OnceLock;
 use std::sync::mpsc::{Sender, channel};
 use std::thread;
 
+use objc2::msg_send;
 use objc2::rc::{Retained, autoreleasepool};
-use objc2::runtime::AnyObject;
-use objc2::{class, msg_send};
+use objc2::runtime::{AnyClass, AnyObject};
 use objc2_foundation::NSString;
 use tokio::sync::oneshot;
 
@@ -124,7 +125,7 @@ impl OsaScript {
     fn compile(source: &str) -> Result<Self> {
         autoreleasepool(|_| unsafe {
             // OSALanguage *js = [OSALanguage languageForName:@"JavaScript"];
-            let lang_cls = class!(OSALanguage);
+            let lang_cls = osa_class(c"OSALanguage")?;
             let js_name = NSString::from_str("JavaScript");
             let js_lang: *mut AnyObject = msg_send![lang_cls, languageForName: &*js_name];
             if js_lang.is_null() {
@@ -134,7 +135,7 @@ impl OsaScript {
             }
 
             // OSAScript *s = [[OSAScript alloc] initWithSource:src language:js];
-            let osa_cls = class!(OSAScript);
+            let osa_cls = osa_class(c"OSAScript")?;
             let src = NSString::from_str(source);
             let alloc: *mut AnyObject = msg_send![osa_cls, alloc];
             let script: *mut AnyObject = msg_send![alloc, initWithSource: &*src, language: js_lang];
@@ -179,6 +180,29 @@ impl OsaScript {
             Ok(value.to_string())
         }
     }
+}
+
+/// Looks up an OSAKit class by name, returning an actionable error instead of
+/// panicking when the framework is not linked into the process.
+///
+/// The classes used here (`OSALanguage`, `OSAScript`) live in `OSAKit`, which
+/// this crate's build script links automatically for normal `bin`/`cdylib`
+/// builds. When nowhear is instead embedded as a **static library**, Cargo does
+/// not perform the final link, so the embedding build system must add
+/// `-framework OSAKit` itself. If it does not, the classes are never registered
+/// with the Objective-C runtime and the runtime lookup returns `nil`; this
+/// surfaces that as a recoverable [`MediaSourceError`] rather than the hard
+/// panic that the `class!` macro would raise on the worker thread.
+fn osa_class(name: &CStr) -> Result<&'static AnyClass> {
+    AnyClass::get(name).ok_or_else(|| {
+        MediaSourceError::InternalError(format!(
+            "OSAKit class `{}` is not registered; the OSAKit framework is not linked \
+             into this process. It links automatically for normal cargo binaries, but \
+             when embedding nowhear as a static library the final link must add \
+             `-framework OSAKit`.",
+            name.to_string_lossy()
+        ))
+    })
 }
 
 /// Apple Event error code returned when the host application is not authorized
@@ -241,6 +265,35 @@ unsafe fn error_message(err: *mut AnyObject) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // osa_class ---------------------------------------------------------------
+
+    #[test]
+    fn test_osa_class_present_returns_ok() {
+        // OSALanguage is registered whenever OSAKit is linked, as it is in the
+        // test binary; the lookup must succeed rather than error.
+        assert!(osa_class(c"OSALanguage").is_ok());
+    }
+
+    #[test]
+    fn test_osa_class_missing_returns_actionable_error() {
+        // Looking up a class OSAKit does not define stands in for the
+        // "framework not linked" case: it must yield an actionable InternalError
+        // naming the framework and the link flag, not the hard panic that the
+        // `class!` macro raises.
+        let err = osa_class(c"NoSuchOSAKitClass").expect_err("unknown OSA class must error");
+        assert!(
+            matches!(&err, MediaSourceError::InternalError(_)),
+            "expected InternalError, got {err:?}"
+        );
+        if let MediaSourceError::InternalError(msg) = err {
+            assert!(msg.contains("OSAKit"), "should mention OSAKit: {msg}");
+            assert!(
+                msg.contains("-framework OSAKit"),
+                "should mention the link flag: {msg}"
+            );
+        }
+    }
 
     // error_message -----------------------------------------------------------
 
