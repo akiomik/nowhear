@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- macOS: A missing OSAKit framework no longer crashes the host application. The OSA worker resolved `OSALanguage`/`OSAScript` with the `class!` macro, which panics on the `nowhear-osa` thread when the class is not registered (i.e. OSAKit is not linked into the process). The classes are now looked up with `AnyClass::get`, and an unresolved class is surfaced as a `MediaSourceError::InternalError` whose message points at the cause. Cargo links OSAKit automatically for normal `bin`/`cdylib` builds; static-library embedders must add `-framework OSAKit` to their final link, which the error message now states
+
 ## [0.5.1] - 2026-07-03
 
 ### Fixed
