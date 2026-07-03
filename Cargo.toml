@@ -11,6 +11,7 @@ license = "Apache-2.0"
 keywords = ["media", "music", "playback", "mpris", "now-playing"]
 categories = ["multimedia", "os"]
 include = [
+  "build.rs",
   "examples",
   "src",
   "CHANGELOG.md",
