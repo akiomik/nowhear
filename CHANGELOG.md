@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-03
+
+### Fixed
+
+- Packaging: `build.rs` is now included in the published crate. Its `include` list omitted the build script, so `cargo publish` dropped it and normalized the manifest to `build = false`. Without it, the `cargo:rustc-link-lib=framework=OSAKit` directive was never emitted for downstream crates, so on macOS OSAKit was not linked and the `OSALanguage` class could not be found at runtime, panicking the `nowhear-osa` worker thread. This only affected consumers of the published crate; local and path-dependency builds were unaffected
+
 ## [0.5.0] - 2026-06-29
 
 ### Added
@@ -124,7 +130,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Windows: Windows Media Control API support
 - Two example applications: `basic` and `stream`
 
-[unreleased]: https://github.com/akiomik/nowhear/compare/v0.5.0...HEAD
+[unreleased]: https://github.com/akiomik/nowhear/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/akiomik/nowhear/releases/tag/v0.5.1
 [0.5.0]: https://github.com/akiomik/nowhear/releases/tag/v0.5.0
 [0.4.1]: https://github.com/akiomik/nowhear/releases/tag/v0.4.1
 [0.4.0]: https://github.com/akiomik/nowhear/releases/tag/v0.4.0
