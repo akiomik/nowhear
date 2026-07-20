@@ -38,9 +38,11 @@ impl TryFrom<Dict<'_, '_>> for MprisMetadata {
         }
 
         let length_key = Value::new("mpris:length");
-        if let Some(Value::U64(length)) = dict.get(&length_key)? {
-            metadata.length = Some(length);
-        }
+        metadata.length = match dict.get(&length_key)? {
+            Some(Value::I64(length)) if length > 0 => Some(length.unsigned_abs()),
+            Some(Value::U64(length)) => Some(length),
+            _ => None,
+        };
 
         let track_id_key = Value::new("mpris:trackid");
         if let Some(Value::Str(track_id)) = dict.get(&track_id_key)? {
@@ -286,6 +288,17 @@ mod tests {
                 ..Default::default()
             })
         );
+    }
+
+    #[test]
+    fn test_mpris_metadata_accepts_signed_length() {
+        let mut values = HashMap::new();
+        values.insert("mpris:length", Value::I64(326_599_000));
+        let dict = Dict::from(values);
+
+        let metadata = MprisMetadata::try_from(dict).unwrap();
+
+        assert_eq!(metadata.length, Some(326_599_000));
     }
 
     #[test]
