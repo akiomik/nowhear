@@ -45,9 +45,11 @@ impl TryFrom<Dict<'_, '_>> for MprisMetadata {
         };
 
         let track_id_key = Value::new("mpris:trackid");
-        if let Some(Value::Str(track_id)) = dict.get(&track_id_key)? {
-            metadata.track_id = Some(track_id.to_string());
-        }
+        metadata.track_id = match dict.get(&track_id_key)? {
+            Some(Value::Str(track_id)) => Some(track_id.to_string()),
+            Some(Value::ObjectPath(track_id)) => Some(track_id.to_string()),
+            _ => None,
+        };
 
         let album_key = Value::new("xesam:album");
         if let Some(Value::Str(album)) = dict.get(&album_key)? {
@@ -137,6 +139,8 @@ mod tests {
     use super::*;
 
     use std::collections::HashMap;
+
+    use zbus::zvariant::ObjectPath;
 
     #[test]
     fn test_mpris_metadata_try_from_dict_with_full_info() {
@@ -301,6 +305,27 @@ mod tests {
             metadata,
             Ok(MprisMetadata {
                 length: Some(326_599_000),
+                ..Default::default()
+            })
+        );
+    }
+
+    #[test]
+    fn test_mpris_metadata_accepts_object_path_track_id() {
+        let mut values = HashMap::new();
+        values.insert(
+            "mpris:trackid",
+            Value::ObjectPath(ObjectPath::from_static_str_unchecked(
+                "/org/mpris/MediaPlayer2/Track/1",
+            )),
+        );
+        let dict = Dict::from(values);
+
+        let metadata = MprisMetadata::try_from(dict);
+        assert_eq!(
+            metadata,
+            Ok(MprisMetadata {
+                track_id: Some("/org/mpris/MediaPlayer2/Track/1".to_owned()),
                 ..Default::default()
             })
         );

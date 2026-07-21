@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - macOS: A missing OSAKit framework no longer crashes the host application. The OSA worker resolved `OSALanguage`/`OSAScript` with the `class!` macro, which panics on the `nowhear-osa` thread when the class is not registered (i.e. OSAKit is not linked into the process). The classes are now looked up with `AnyClass::get`, and an unresolved class is surfaced as a `MediaSourceError::InternalError` whose message points at the cause. Cargo links OSAKit automatically for normal `bin`/`cdylib` builds; static-library embedders must add `-framework OSAKit` to their final link, which the error message now states
 - Linux: `Track::duration` is now populated when a player reports `mpris:length` as a signed 64-bit integer (e.g. Chromium-based players). The MPRIS2 spec types `mpris:length` as `x` (signed int64), but the parser only matched `Value::U64`, so spec-compliant players silently produced a `None` duration
+- Linux: `Track::track_id` is now populated when a player reports `mpris:trackid` as a D-Bus object path. The MPRIS2 spec types `mpris:trackid` as an object path (`o`), which zvariant deserializes as `Value::ObjectPath`; the parser only matched `Value::Str`, so spec-compliant players silently produced a `None` track ID
 
 ## [0.5.1] - 2026-07-03
 
