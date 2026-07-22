@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-07-22
+
 ### Fixed
 
 - macOS: A missing OSAKit framework no longer crashes the host application. The OSA worker resolved `OSALanguage`/`OSAScript` with the `class!` macro, which panics on the `nowhear-osa` thread when the class is not registered (i.e. OSAKit is not linked into the process). The classes are now looked up with `AnyClass::get`, and an unresolved class is surfaced as a `MediaSourceError::InternalError` whose message points at the cause. Cargo links OSAKit automatically for normal `bin`/`cdylib` builds; static-library embedders must add `-framework OSAKit` to their final link, which the error message now states
@@ -136,7 +138,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Windows: Windows Media Control API support
 - Two example applications: `basic` and `stream`
 
-[unreleased]: https://github.com/akiomik/nowhear/compare/v0.5.1...HEAD
+[unreleased]: https://github.com/akiomik/nowhear/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/akiomik/nowhear/releases/tag/v0.5.1
 [0.5.1]: https://github.com/akiomik/nowhear/releases/tag/v0.5.1
 [0.5.0]: https://github.com/akiomik/nowhear/releases/tag/v0.5.0
 [0.4.1]: https://github.com/akiomik/nowhear/releases/tag/v0.4.1
