@@ -24,7 +24,7 @@ tracing = ["dep:tracing"]
 serde = ["dep:serde"]
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 futures = "0.3"
 thiserror = "2"
 serde = { version = "1", features = ["derive"], optional = true }
