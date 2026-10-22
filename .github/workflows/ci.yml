@@ -19,8 +19,9 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
+          cache: false
           components: rustfmt
 
       - name: Check formatting
@@ -40,8 +41,9 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
+          cache: false
           components: clippy
 
       - name: Cache cargo registry
@@ -93,10 +95,11 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
+          cache: false
           toolchain: ${{ matrix.rust }}
-          targets: ${{ matrix.target }}
+          target: ${{ matrix.target }}
 
       - name: Cache cargo registry
         uses: actions/cache@v6
@@ -139,7 +142,9 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          cache: false
 
       - name: Cache cargo registry
         uses: actions/cache@v6
@@ -171,8 +176,9 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
+          cache: false
           toolchain: "1.88.0"  # Adjust based on your MSRV
 
       - name: Cache cargo registry
