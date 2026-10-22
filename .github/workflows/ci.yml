@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Test release tag validation
+        run: bash .github/scripts/test-validate-release-tag.sh
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v2

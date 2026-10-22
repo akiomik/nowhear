@@ -16,6 +16,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v7
+      - name: Validate release tag
+        run: bash .github/scripts/validate-release-tag.sh "$GITHUB_REF_NAME"
       - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           cache: false
