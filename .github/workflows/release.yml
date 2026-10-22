@@ -16,7 +16,9 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          cache: false
 
       - name: Cache cargo registry
         uses: actions/cache@v6

@@ -17,8 +17,9 @@ jobs:
       - uses: actions/checkout@v7
       
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
+          cache: false
           components: llvm-tools-preview
       
       - name: Install system dependencies
