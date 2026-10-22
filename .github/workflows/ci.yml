@@ -22,6 +22,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           cache: false
+          build-warnings: ''
           components: rustfmt
 
       - name: Check formatting
@@ -44,6 +45,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           cache: false
+          build-warnings: ''
           components: clippy
 
       - name: Cache cargo registry
@@ -98,6 +100,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           cache: false
+          build-warnings: ''
           toolchain: ${{ matrix.rust }}
           target: ${{ matrix.target }}
 
@@ -145,6 +148,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           cache: false
+          build-warnings: ''
 
       - name: Cache cargo registry
         uses: actions/cache@v6
@@ -179,6 +183,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           cache: false
+          build-warnings: ''
           toolchain: "1.88.0"  # Adjust based on your MSRV
 
       - name: Cache cargo registry

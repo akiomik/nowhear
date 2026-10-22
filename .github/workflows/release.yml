@@ -19,6 +19,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           cache: false
+          build-warnings: ''
 
       - name: Cache cargo registry
         uses: actions/cache@v6
