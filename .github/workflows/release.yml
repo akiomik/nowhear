@@ -34,8 +34,10 @@ jobs:
       - name: Check package
         run: cargo publish --dry-run --locked
 
-  # Packs the same commit again and uploads it without compiling, so no
-  # dependency code runs in the job that can request an OIDC token.
+  # Packs the same commit again and uploads it without compiling. Any step
+  # in this job can request the OIDC token, so it runs only actions/checkout,
+  # rust-lang's own tools and the runner image: no dependency code and no
+  # other actions.
   publish:
     name: Publish to crates.io
     needs: verify
@@ -47,9 +49,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
-        with:
-          cache: false
+      - run: rustup toolchain install
 
       - name: Authenticate with crates.io
         uses: rust-lang/crates-io-auth-action@v1.0.6
