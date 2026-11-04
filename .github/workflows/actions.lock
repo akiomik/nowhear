@@ -14,7 +14,6 @@ workflows:
         - 'codecov/codecov-action@v7.1.1'
     '.github/workflows/release.yml':
         - 'actions-rust-lang/setup-rust-toolchain@v2.0.0'
-        - 'actions/cache@v6.1.0'
         - 'actions/checkout@v7.0.1'
         - 'rust-lang/crates-io-auth-action@v1.0.6'
     '.github/workflows/spelling.yml':

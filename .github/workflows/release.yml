@@ -20,24 +20,6 @@ jobs:
         with:
           cache: false
 
-      - name: Cache cargo registry
-        uses: actions/cache@v6.1.0
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo index
-        uses: actions/cache@v6.1.0
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-stable-cargo-git-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo build
-        uses: actions/cache@v6.1.0
-        with:
-          path: target
-          key: ${{ runner.os }}-stable-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
-
       - name: Install system dependencies
         run: |
           sudo apt-get update
