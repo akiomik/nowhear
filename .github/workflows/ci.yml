@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
 
       - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
+        uses: actions-rust-lang/setup-rust-toolchain@v2.0.1
         with:
           cache: false
           components: rustfmt
@@ -41,7 +41,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
 
       - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
+        uses: actions-rust-lang/setup-rust-toolchain@v2.0.1
         with:
           cache: false
           components: clippy
@@ -95,7 +95,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
 
       - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
+        uses: actions-rust-lang/setup-rust-toolchain@v2.0.1
         with:
           cache: false
           toolchain: ${{ matrix.rust }}
@@ -142,7 +142,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
 
       - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
+        uses: actions-rust-lang/setup-rust-toolchain@v2.0.1
         with:
           cache: false
 
@@ -176,7 +176,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
 
       - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
+        uses: actions-rust-lang/setup-rust-toolchain@v2.0.1
         with:
           cache: false
           toolchain: "1.88.0"  # Adjust based on your MSRV
